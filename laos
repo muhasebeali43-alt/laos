@@ -55,7 +55,13 @@
     </style>
 </head>
 <body>
-    <div id="root"></div>
+    <!-- Eğer React yüklenmezse bu mesaj görünür -->
+    <div id="root">
+        <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: sans-serif;">
+            <p>Sistem Yükleniyor...</p>
+            <small style="color: #666;">Eğer bu ekran gitmiyorsa lütfen internet bağlantınızı veya dosya içeriğini kontrol edin.</small>
+        </div>
+    </div>
 
     <script type="text/babel">
         // --- FİREBASE YAPILANDIRMASI ---
@@ -194,7 +200,7 @@
             const totalOutflow = (staffTotalPaid + totalPaidScheduled + totals.comm);
             const netLiquidity = Number(settings.initialBalance || 0) + grossIncome + totals.loan - totalOutflow;
 
-            // Raporlama Verisi (Hata Düzeltildi)
+            // Raporlama Verisi
             const reportData = useMemo(() => {
                 const now = new Date();
                 const filter = (item) => {
@@ -320,24 +326,6 @@
                                         </div>
                                     </div>
                                 </div>
-
-                                {/* AYARLAR HIZLI ERİŞİM */}
-                                <div className="bg-slate-50 p-10 rounded-[3.5rem] border border-slate-200/50 flex flex-col md:flex-row items-center justify-between gap-8">
-                                    <div className="flex items-center gap-6">
-                                        <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100"><Icon name="landmark" size={24} className="text-slate-400" /></div>
-                                        <div>
-                                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Açılış Bakiyesi</p>
-                                            <div className="flex items-center gap-2">
-                                                <span className="text-2xl font-light text-slate-300">₺</span>
-                                                <input type="number" value={settings.initialBalance} onChange={(e) => saveSet('initialBalance', e.target.value)} className="text-3xl font-black bg-transparent border-none p-0 focus:ring-0 w-32" />
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-4 bg-white px-8 py-5 rounded-[2.5rem] shadow-sm border border-slate-100">
-                                        <Icon name="refresh-cw" className="text-green-500 animate-spin-slow" size={20} />
-                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Veriler Bulut ile Eşitlendi</p>
-                                    </div>
-                                </div>
                             </div>
                         )}
 
@@ -362,7 +350,7 @@
                                     </div>
                                 </header>
                                 <div className="grid gap-4">
-                                    {posSettlements.map(settlement => (
+                                    {posSettlements.length > 0 ? posSettlements.map(settlement => (
                                         <div key={settlement.id} className={`bg-white p-6 rounded-[2.5rem] shadow-sm border flex flex-col md:flex-row justify-between items-center gap-6 glass-card transition-all ${settlement.isSettled ? 'opacity-50 grayscale' : 'hover:border-amber-400'}`}>
                                             <div className="flex items-center gap-6">
                                                 <div className={`p-4 rounded-2xl ${settlement.isSettled ? 'bg-slate-100' : 'bg-amber-50 text-amber-600'}`}><Icon name="calendar-clock" size={24} /></div>
@@ -373,7 +361,9 @@
                                                 <p className="text-2xl font-black text-slate-900">{formatCurrency(settlement.net)}</p>
                                             </div>
                                         </div>
-                                    ))}
+                                    )) : (
+                                        <p className="text-center text-slate-400 py-10">Henüz POS işlemi bulunmuyor.</p>
+                                    )}
                                 </div>
                             </div>
                         )}
