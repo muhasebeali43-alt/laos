@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Kafe Pro | Finansal Komuta Merkezi</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide İkon Kütüphanesi -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- React & Babel -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Firebase v8 -->
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800;900&display=swap');
+        
+        body { 
+            font-family: 'Poppins', sans-serif; 
+            background-color: #F8FAFC;
+            color: #1e293b;
+            -webkit-tap-highlight-color: transparent;
+            overscroll-behavior-y: contain;
+        }
+
+        .animate-in { animation: slideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+
+        .sidebar-gradient {
+            background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%);
+        }
+
+        input:focus { outline: none; }
+        input[type="number"], input[type="text"], input[type="date"], select { font-size: 16px !important; }
+        
+        .glass-card {
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        .custom-shadow {
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.05), 0 10px 10px -5px rgba(0, 0, 0, 0.02);
+        }
+
+        .hero-gradient {
+            background: linear-gradient(135deg, #0f172a 0%, #334155 100%);
+        }
+    </style>
+</head>
+<body>
+    <div id="root">
+        <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: sans-serif; background: #0f172a; color: white;">
+            <div style="border: 4px solid #f59e0b; border-top: 4px solid transparent; border-radius: 50%; width: 40px; height: 40px; animate: spin 1s linear infinite;"></div>
+            <style>@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }</style>
+            <p style="margin-top: 20px; font-weight: bold; letter-spacing: 2px;">KAFE PRO YÜKLENİYOR</p>
+        </div>
+    </div>
+
+    <script type="text/babel">
+        // --- FİREBASE YAPILANDIRMASI ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyDDzSjjk0N-k3QLIJQu8jHWxCDtgzvZ1lE",
+            authDomain: "laos-61380.firebaseapp.com",
+            projectId: "laos-61380",
+            storageBucket: "laos-61380.appspot.com",
+            messagingSenderId: "833439553703",
+            appId: "1:833439553703:web:6f4a1c7969a7f7216fa382"
+        };
+
+        if (!firebase.apps.length) {
+            firebase.initializeApp(firebaseConfig);
+        }
+        const db = firebase.firestore();
+        const auth = firebase.auth();
+        const appId = 'cafe-pro-v1';
+
+        const { useState, useEffect, useMemo } = React;
+
+        const Icon = ({ name, size = 20, className = "" }) => {
+            const camelName = name.split('-').map((word, index) => 
+                index === 0 ? word : word.charAt(0).toUpperCase() + word.slice(1)
+            ).join('');
+            const iconData = lucide.icons[camelName] || lucide.icons[name];
+            if (!iconData) return null;
+            const [tag, attrs, children] = iconData;
+            return React.createElement(
+                'svg', { ...attrs, width: size, height: size, className: `lucide lucide-${name} ${className}`, xmlns: "http://www.w3.org/2000/svg" },
+                children.map((child, i) => React.createElement(child[0], { ...child[1], key: i }))
+            );
+        };
+
+        const App = () => {
+            const [user, setUser] = useState(null);
+            const [activeTab, setActiveTab] = useState('dashboard');
+            const [loading, setLoading] = useState(true);
+            const [saveStatus, setSaveStatus] = useState({});
+            const [reportRange, setReportRange] = useState('monthly'); 
+            const [selectedPersonnelId, setSelectedPersonnelId] = useState(null);
+
+            const [settings, setSettings] = useState({ initialBalance: 0, defaultCommission: 3.5 });
+            const [dailyLogs, setDailyLogs] = useState([]);
+            const [scheduledPayments, setScheduledPayments] = useState([]);
+            const [personnel, setPersonnel] = useState([]);
+            const [personnelPayments, setPersonnelPayments] = useState([]);
+
+            useEffect(() => {
+                const unsubscribeAuth = auth.onAuthStateChanged((u) => {
+                    setUser(u);
+                    if (u) {
+                        const baseRef = db.collection('artifacts').doc(appId).collection('public').doc('data');
+                        baseRef.collection('config').doc('app_settings').onSnapshot(d => d.exists && setSettings(d.data()));
+                        baseRef.collection('dailyLogs').onSnapshot(s => setDailyLogs(s.docs.map(d => ({id: d.id, ...d.data()}))));
+                        baseRef.collection('scheduledPayments').onSnapshot(s => setScheduledPayments(s.docs.map(d => ({id: d.id, ...d.data()}))));
+                        baseRef.collection('personnel').onSnapshot(s => setPersonnel(s.docs.map(d => ({id: d.id, ...d.data()}))));
+                        baseRef.collection('personnelPayments').onSnapshot(s => setPersonnelPayments(s.docs.map(d => ({id: d.id, ...d.data()}))));
+                        setLoading(false);
+                    } else {
+                        auth.signInAnonymously().catch(console.error);
+                    }
+                });
+                return () => unsubscribeAuth();
+            }, []);
+
+            const formatCurrency = (val) => new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY' }).format(val || 0);
+            
+            const setFeedback = (id) => {
+                setSaveStatus(prev => ({ ...prev, [id]: true }));
+                setTimeout(() => setSaveStatus(prev => { const n = {...prev}; delete n[id]; return n; }), 2000);
+            };
+
+            const posSettlements = useMemo(() => {
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+                return dailyLogs
+                    .filter(log => Number(log.card) > 0)
+                    .map(log => {
+                        const logDate = new Date(log.date);
+                        const settlementDate = new Date(logDate);
+                        settlementDate.setDate(logDate.getDate() + 30); 
+                        const commission = (Number(log.card) * (settings.defaultCommission || 3.5)) / 100;
+                        const netAmount = Number(log.card) - commission;
+                        const isSettled = settlementDate <= today;
+                        const daysRemaining = Math.ceil((settlementDate - today) / (1000 * 60 * 60 * 24));
+                        return { id: log.id, originalDate: log.date, settlementDate: settlementDate.toISOString().split('T')[0], gross: Number(log.card), net: netAmount, isSettled, daysRemaining };
+                    })
+                    .sort((a, b) => new Date(a.settlementDate) - new Date(b.settlementDate));
+            }, [dailyLogs, settings.defaultCommission]);
+
+            const pendingPosTotal = useMemo(() => posSettlements.filter(p => !p.isSettled).reduce((acc, p) => acc + p.net, 0), [posSettlements]);
+
+            const totals = useMemo(() => dailyLogs.reduce((acc, log) => {
+                const comm = (Number(log.card || 0) * (settings.defaultCommission || 3.5)) / 100;
+                return {
+                    loan: acc.loan + Number(log.dailyLoan || 0),
+                    cash: acc.cash + Number(log.cash || 0),
+                    card: acc.card + Number(log.card || 0),
+                    transfer: acc.transfer + Number(log.transfer || 0),
+                    cheque: acc.cheque + Number(log.cheque || 0),
+                    comm: acc.comm + comm
+                };
+            }, { loan: 0, cash: 0, card: 0, transfer: 0, cheque: 0, comm: 0 }), [dailyLogs, settings.defaultCommission]);
+
+            const todayPerformance = useMemo(() => {
+                const todayStr = new Date().toLocaleDateString('en-CA'); 
+                return dailyLogs.filter(log => log.date === todayStr).reduce((acc, log) => ({
+                    cash: acc.cash + Number(log.cash || 0),
+                    card: acc.card + Number(log.card || 0),
+                    total: acc.total + Number(log.cash || 0) + Number(log.card || 0) + Number(log.transfer || 0) + Number(log.cheque || 0)
+                }), { cash: 0, card: 0, total: 0 });
+            }, [dailyLogs]);
+
+            const pendingOutflowTotal = useMemo(() => {
+                const scheduled = scheduledPayments.filter(p => p.status !== 'paid').reduce((s, p) => s + Number(p.amount || 0), 0);
+                const staffKalan = personnel.reduce((acc, p) => {
+                    const sal = p.type === 'Tam Zamanlı' ? Number(p.fixedSalary || 0) : (Number(p.hourlyRate || 0) * (p.hoursWorked || 0));
+                    const paid = personnelPayments.filter(pay => pay.personnelId === p.id).reduce((s, pay) => s + Number(pay.amount || 0), 0);
+                    return acc + Math.max(0, sal - paid);
+                }, 0);
+                return scheduled + staffKalan;
+            }, [scheduledPayments, personnel, personnelPayments]);
+
+            const totalPaidScheduled = useMemo(() => scheduledPayments.filter(p => p.status === 'paid').reduce((s, p) => s + Number(p.amount || 0), 0), [scheduledPayments]);
+            const staffTotalPaid = useMemo(() => personnelPayments.reduce((s, p) => s + Number(p.amount || 0), 0), [personnelPayments]);
+            
+            const grossIncome = (totals.cash + totals.card + totals.transfer + totals.cheque);
+            const totalOutflow = (staffTotalPaid + totalPaidScheduled + totals.comm);
+            const netLiquidity = Number(settings.initialBalance || 0) + grossIncome + totals.loan - totalOutflow;
+
+            const reportData = useMemo(() => {
+                const now = new Date();
+                const filter = (item) => {
+                    const d = new Date(item.date || item.dueDate || (item.createdAt ? item.createdAt.toDate() : now));
+                    if (reportRange === 'daily') return d.toDateString() === now.toDateString();
+                    if (reportRange === 'monthly') return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+                    return true;
+                };
+                const fLogs = dailyLogs.filter(filter);
+                const income = fLogs.reduce((a, l) => ({ 
+                    cash: a.cash + Number(l.cash || 0), 
+                    card: a.card + Number(l.card || 0), 
+                    loan: a.loan + Number(l.dailyLoan || 0),
+                    other: a.other + Number(l.transfer || 0) + Number(l.cheque || 0)
+                }), {cash:0, card:0, loan:0, other:0});
+                return { income, total: income.cash + income.card + income.other };
+            }, [dailyLogs, reportRange]);
+
+            const getCol = (c) => db.collection('artifacts').doc(appId).collection('public').doc('data').collection(c);
+            const saveSet = async (f, v) => { await db.collection('artifacts').doc(appId).collection('public').doc('data').collection('config').doc('app_settings').set({...settings, [f]: v}, {merge:true}); setFeedback(f); };
+            const addLog = async () => await getCol('dailyLogs').add({date: new Date().toLocaleDateString('en-CA'), cash:0, card:0, transfer:0, cheque:0, dailyLoan:0, createdAt: firebase.firestore.FieldValue.serverTimestamp()});
+            const updateLog = async (id, d) => { await getCol('dailyLogs').doc(id).update(d); setFeedback(id); };
+            const deleteItem = async (c, id) => { if(confirm("Bu kaydı kalıcı olarak silmek istediğinize emin misiniz?")) await getCol(c).doc(id).delete(); };
+
+            if (loading) return (
+                <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white">
+                    <Icon name="coffee" size={48} className="text-amber-500 mb-6 animate-bounce" />
+                    <p className="font-black tracking-[0.3em] uppercase text-[10px] text-slate-500">Kafe Pro Hazırlanıyor</p>
+                </div>
+            );
+
+            return (
+                <div className="min-h-screen flex flex-col md:flex-row pb-20 md:pb-0 overflow-x-hidden">
+                    {/* Yan Menü */}
+                    <nav className="fixed bottom-0 left-0 right-0 md:relative md:w-80 sidebar-gradient text-white p-6 flex md:flex-col z-50 shadow-2xl">
+                        <div className="hidden md:flex items-center gap-4 mb-14 px-2">
+                            <div className="bg-amber-500 p-3 rounded-2xl shadow-lg shadow-amber-500/30"><Icon name="coffee" size={28} className="text-slate-900" /></div>
+                            <div><h2 className="text-2xl font-black tracking-tighter uppercase leading-none">Kafe Analiz</h2><p className="text-[10px] text-slate-500 font-bold uppercase mt-1 tracking-widest">Yönetim Paneli</p></div>
+                        </div>
+
+                        <div className="flex flex-row md:flex-col justify-around w-full gap-3">
+                            {[
+                                {id:'dashboard', icon:'layout-dashboard', label:'Genel Özet'},
+                                {id:'daily', icon:'calendar-days', label:'Günlük Akış'},
+                                {id:'pos', icon:'credit-card', label:'POS Takip'},
+                                {id:'personnel', icon:'users', label:'Personeller'},
+                                {id:'payments', icon:'receipt', label:'Ödemeler'},
+                                {id:'reports', icon:'bar-chart-3', label:'Raporlar'}
+                            ].map(t => (
+                                <button key={t.id} onClick={() => {setActiveTab(t.id); setSelectedPersonnelId(null);}} 
+                                    className={`flex flex-col md:flex-row items-center gap-3 p-4 rounded-2xl transition-all flex-1 md:flex-none ${activeTab === t.id ? 'bg-amber-500 text-slate-900 shadow-xl shadow-amber-500/20 scale-105 font-bold' : 'text-slate-500 hover:text-slate-300'}`}>
+                                    <Icon name={t.icon} size={22} /> <span className="text-[10px] md:text-xs uppercase tracking-wider">{t.label}</span>
+                                </button>
+                            ))}
+                        </div>
+                    </nav>
+
+                    <main className="flex-1 p-4 md:p-12 overflow-y-auto max-w-full">
+                        {activeTab === 'dashboard' && (
+                            <div className="max-w-4xl mx-auto space-y-10 animate-in">
+                                <header>
+                                    <h1 className="text-4xl font-black text-slate-900 tracking-tight">Finansal Komuta Merkezi</h1>
+                                    <p className="text-slate-500 text-sm font-medium">İşletmenizin anlık nabzı ve nakit akışı.</p>
+                                </header>
+
+                                {/* ANA KART: CEBİMDEKİ PARA */}
+                                <div className="hero-gradient p-12 rounded-[4rem] text-white shadow-2xl relative overflow-hidden group transition-all">
+                                    <div className="relative z-10">
+                                        <p className="text-[12px] font-bold text-slate-400 uppercase mb-3 tracking-[0.3em] flex items-center gap-2">
+                                            <Icon name="wallet" size={14} className="text-amber-500" /> Cebimdeki Para (Net Nakit)
+                                        </p>
+                                        <h2 className="text-7xl font-black text-amber-400 tracking-tighter mb-8">{formatCurrency(netLiquidity)}</h2>
+                                        
+                                        <div className="grid grid-cols-2 md:grid-cols-4 gap-8 border-t border-white/10 pt-8">
+                                            <div><p className="text-[10px] text-slate-500 font-black uppercase mb-1">Ciro</p><p className="font-bold text-xl">{formatCurrency(grossIncome)}</p></div>
+                                            <div><p className="text-[10px] text-slate-500 font-black uppercase mb-1">Gider</p><p className="font-bold text-xl text-red-400">{formatCurrency(totalOutflow)}</p></div>
+                                            <div><p className="text-[10px] text-slate-500 font-black uppercase mb-1">Kredi</p><p className="font-bold text-xl text-blue-400">{formatCurrency(totals.loan)}</p></div>
+                                            <div><p className="text-[10px] text-slate-500 font-black uppercase mb-1">Başlangıç</p><p className="font-bold text-xl text-slate-300">{formatCurrency(settings.initialBalance)}</p></div>
+                                        </div>
+                                    </div>
+                                    <Icon name="banknote" size={300} className="absolute -bottom-24 -right-24 opacity-[0.03] text-white pointer-events-none" />
+                                </div>
+
+                                {/* İKİNCİL KARTLAR */}
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+                                    <div onClick={() => setActiveTab('pos')} className="bg-white p-8 rounded-[3rem] custom-shadow border border-slate-100 group cursor-pointer hover:border-amber-400 transition-all flex flex-col justify-between min-h-[200px]">
+                                        <div className="flex justify-between items-start"><div className="bg-amber-50 p-4 rounded-2xl text-amber-600"><Icon name="credit-card" size={24} /></div><Icon name="arrow-up-right" size={18} className="text-slate-300 group-hover:text-amber-500" /></div>
+                                        <div><p className="text-[11px] font-black text-slate-400 uppercase tracking-widest mb-1">POS'tan Gelecek</p><p className="text-3xl font-black text-slate-900 tracking-tight">{formatCurrency(pendingPosTotal)}</p><p className="text-[10px] font-bold text-amber-500 mt-2 uppercase tracking-tighter">Vadesi Beklenen</p></div>
+                                    </div>
+                                    <div onClick={() => setActiveTab('daily')} className="bg-white p-8 rounded-[3rem] custom-shadow border border-slate-100 group cursor-pointer hover:border-indigo-400 transition-all flex flex-col justify-between min-h-[200px]">
+                                        <div className="flex justify-between items-start"><div className="bg-indigo-50 p-4 rounded-2xl text-indigo-600"><Icon name="zap" size={24} /></div><Icon name="arrow-up-right" size={18} className="text-slate-300 group-hover:text-indigo-500" /></div>
+                                        <div><p className="text-[11px] font-black text-slate-400 uppercase tracking-widest mb-1">Bugünkü İşlemler</p><p className="text-3xl font-black text-slate-900 tracking-tight">{formatCurrency(todayPerformance.total)}</p><p className="text-[10px] font-bold text-indigo-500 mt-2 uppercase tracking-tighter">Anlık Satış Özeti</p></div>
+                                    </div>
+                                    <div onClick={() => setActiveTab('payments')} className="bg-white p-8 rounded-[3rem] custom-shadow border border-slate-100 group cursor-pointer hover:border-red-400 transition-all flex flex-col justify-between min-h-[200px]">
+                                        <div className="flex justify-between items-start"><div className="bg-red-50 p-4 rounded-2xl text-red-600"><Icon name="receipt" size={24} /></div><Icon name="arrow-up-right" size={18} className="text-slate-300 group-hover:text-red-500" /></div>
+                                        <div><p className="text-[11px] font-black text-slate-400 uppercase tracking-widest mb-1">Ödemeler (Bekleyen)</p><p className="text-3xl font-black text-red-600 tracking-tight">{formatCurrency(pendingOutflowTotal)}</p><p className="text-[10px] font-bold text-red-400 mt-2 uppercase tracking-tighter">Henüz Ödenmedi</p></div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {activeTab === 'pos' && (
+                            <div className="max-w-4xl mx-auto space-y-8 animate-in">
+                                <header className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6 mb-8">
+                                    <div><h2 className="text-4xl font-black text-slate-900 tracking-tight">POS Yönetimi</h2><p className="text-slate-500 text-sm">30 günlük valör ve komisyon ayarları.</p></div>
+                                    <div className="flex gap-4 w-full md:w-auto">
+                                        <div className="bg-white px-6 py-3 rounded-3xl border border-slate-200 flex flex-col">
+                                            <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Banka Komisyonu</p>
+                                            <div className="flex items-center gap-1 font-black text-xl text-slate-800"><span>%</span><input type="number" step="0.1" value={settings.defaultCommission} onChange={(e) => saveSet('defaultCommission', e.target.value)} className="w-12 bg-transparent border-none p-0 focus:ring-0" /></div>
+                                        </div>
+                                        <div className="bg-amber-100 px-6 py-3 rounded-3xl border border-amber-200">
+                                            <p className="text-[9px] font-black text-amber-600 uppercase mb-1 tracking-widest">Bekleyen Net</p><p className="text-2xl font-black text-amber-700">{formatCurrency(pendingPosTotal)}</p>
+                                        </div>
+                                    </div>
+                                </header>
+                                <div className="grid gap-4">
+                                    {posSettlements.length > 0 ? posSettlements.map(settlement => (
+                                        <div key={settlement.id} className={`bg-white p-6 rounded-[2.5rem] shadow-sm border flex flex-col md:flex-row justify-between items-center gap-6 glass-card transition-all ${settlement.isSettled ? 'opacity-50 grayscale' : 'hover:border-amber-400'}`}>
+                                            <div className="flex items-center gap-6"><div className={`p-4 rounded-2xl ${settlement.isSettled ? 'bg-slate-100' : 'bg-amber-50 text-amber-600'}`}><Icon name="calendar-clock" size={24} /></div><div><p className="text-[11px] font-black text-slate-400 uppercase tracking-widest">Yatacağı Tarih</p><p className="text-xl font-black text-slate-800">{new Date(settlement.settlementDate).toLocaleDateString('tr-TR')}</p></div></div>
+                                            <div className="text-right"><p className="text-[11px] font-black text-slate-400 uppercase mb-1">Net Alacak</p><p className="text-2xl font-black text-slate-900">{formatCurrency(settlement.net)}</p></div>
+                                        </div>
+                                    )) : <p className="text-center text-slate-400 py-10">Henüz POS işlemi bulunmuyor.</p>}
+                                </div>
+                            </div>
+                        )}
+
+                        {activeTab === 'daily' && (
+                            <div className="max-w-2xl mx-auto space-y-6 animate-in">
+                                <div className="flex justify-between items-center mb-8 px-2">
+                                    <div><h2 className="text-3xl font-black text-slate-900 tracking-tight">Günlük Akış</h2><p className="text-slate-500 text-sm">Girişleri buradan kaydedin.</p></div>
+                                    <button onClick={addLog} className="bg-slate-900 text-white p-6 rounded-full shadow-2xl hover:scale-110 transition-all"><Icon name="plus" size={32} /></button>
+                                </div>
+                                {dailyLogs.sort((a,b) => new Date(b.date) - new Date(a.date)).map(log => (
+                                    <div key={log.id} className="bg-white p-10 rounded-[3.5rem] custom-shadow border border-slate-100 space-y-8 glass-card group">
+                                        <div className="flex justify-between items-center border-b border-slate-50 pb-6">
+                                            <div className="flex items-center gap-3"><Icon name="calendar" size={18} className="text-slate-400" /><input type="date" value={log.date} onChange={(e) => updateLog(log.id, {date: e.target.value})} className="font-black text-slate-800 border-none p-0 bg-transparent focus:ring-0" /></div>
+                                            <button onClick={() => deleteItem('dailyLogs', log.id)} className="text-slate-200 hover:text-red-500"><Icon name="trash-2" size={20}/></button>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-8">
+                                            <div><label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">Nakit Satış</label><input type="number" value={log.cash} onChange={(e) => updateLog(log.id, {cash: e.target.value})} className="w-full bg-slate-50 p-5 rounded-[2rem] font-black text-2xl border-none" /></div>
+                                            <div><label className="text-[11px] font-black text-blue-400 uppercase tracking-widest ml-1">POS Satış</label><input type="number" value={log.card} onChange={(e) => updateLog(log.id, {card: e.target.value})} className="w-full bg-blue-50 p-5 rounded-[2rem] font-black text-2xl text-blue-700 border-none" /></div>
+                                        </div>
+                                        <div className="bg-amber-50 p-8 rounded-[3rem] border border-amber-100 relative">
+                                            <label className="text-[11px] font-black text-amber-700 uppercase flex items-center gap-2 mb-3 tracking-widest"><Icon name="dollar-sign" size={14} /> Kredi / Dış Borç Girişi</label>
+                                            <input type="number" value={log.dailyLoan || 0} onChange={(e) => updateLog(log.id, {dailyLoan: e.target.value})} className="w-full bg-transparent border-none p-0 font-black text-4xl text-amber-900 focus:ring-0" />
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {activeTab === 'personnel' && (
+                            <div className="max-w-5xl mx-auto space-y-8 animate-in">
+                                {!selectedPersonnelId ? (
+                                    <div className="space-y-10">
+                                        <div className="flex justify-between items-end mb-10 px-2">
+                                            <div><h2 className="text-4xl font-black text-slate-900 tracking-tight">Personeller</h2><p className="text-slate-500 text-sm">Hakediş ve ödemeler.</p></div>
+                                            <button onClick={async () => await getCol('personnel').add({name: 'Yeni Personel', type: 'Tam Zamanlı', fixedSalary: 0, hourlyRate: 0, hoursWorked: 0})} className="bg-slate-900 text-white p-6 rounded-[2.5rem] shadow-xl hover:scale-105 transition-all"><Icon name="user-plus" size={28} /></button>
+                                        </div>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                            {personnel
