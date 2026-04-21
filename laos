@@ -229,7 +229,8 @@ export default function App() {
     return prod.ingredients.reduce((total, ing) => {
       const invItem = inventory.find(i => i.id === ing.id);
       if (!invItem) return total;
-      // Eğer birimi kg/L ise 1000'e bölerek gram/ml maliyeti buluruz
+      // Eğer birimi kg/L ise 1000'e bölerek gram/ml maliyeti buluruz.
+      // Eğer birimi zaten gr/ml/Adet ise direkt girilen fiyatı miktar ile çarparız.
       const unitFactor = (invItem.unit === 'kg' || invItem.unit === 'L') ? 1000 : 1;
       return total + (toNum(invItem.price) / unitFactor) * toNum(ing.amount);
     }, 0);
@@ -467,7 +468,7 @@ export default function App() {
           </div>
         )}
 
-        {/* REÇETE & ÜRÜNLER SEKİMESİ (YENİ) */}
+        {/* REÇETE & ÜRÜNLER SEKİMESİ */}
         {activeTab === 'recipes' && (
           <div className="max-w-5xl mx-auto space-y-6 animate-up pb-10">
             <header className="flex flex-col md:flex-row justify-between items-center gap-4 bg-slate-950 p-4 rounded-2xl border-b-4 border-amber-500">
@@ -494,11 +495,13 @@ export default function App() {
                       <div className="flex items-center gap-2 bg-slate-50 p-2 rounded-xl">
                         <p className="text-[8px] font-black text-slate-400 uppercase italic">Alış Fiyatı</p>
                         <div className="flex-1 flex justify-end items-center gap-1">
-                          <MoneyInput value={item.price} onChange={(v) => updateDoc(publicRef('inventory', item.id), { price: v })} className="bg-transparent text-right font-black text-xs border-none p-0 focus:ring-0 w-20" />
+                          <MoneyInput value={item.price} onChange={(v) => updateDoc(publicRef('inventory', item.id), { price: v })} className="bg-transparent text-right font-black text-xs border-none p-0 focus:ring-0 w-24" />
                           <span className="text-[9px] font-bold text-slate-400">₺ / </span>
                           <select value={item.unit} onChange={(e) => updateDoc(publicRef('inventory', item.id), { unit: e.target.value })} className="bg-transparent border-none p-0 text-[9px] font-bold text-slate-500 uppercase focus:ring-0 cursor-pointer">
                             <option value="kg">kg</option>
+                            <option value="gr">gr</option>
                             <option value="L">L</option>
+                            <option value="ml">ml</option>
                             <option value="Adet">Adet</option>
                           </select>
                         </div>
@@ -591,7 +594,7 @@ export default function App() {
                                         updateDoc(publicRef('products', prod.id), { ingredients: newIngs });
                                       }} className="bg-white rounded px-2 py-0.5 w-16 text-right font-black text-[10px] border border-slate-200 focus:ring-1 focus:ring-amber-500" />
                                       <span className="text-[8px] font-bold text-slate-400 uppercase italic">
-                                        {invItem?.unit === 'kg' ? 'gr' : invItem?.unit === 'L' ? 'ml' : 'Adet'}
+                                        {invItem?.unit === 'kg' ? 'gr' : invItem?.unit === 'L' ? 'ml' : (invItem?.unit || 'Birim')}
                                       </span>
                                     </div>
                                     <button onClick={() => {
