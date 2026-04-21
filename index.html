@@ -10,10 +10,10 @@
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     
-    <!-- Firebase SDK (v11+) -->
-    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-auth-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore-compat.js"></script>
+    <!-- Firebase SDK (Compat Modu) -->
+    <script src="https://www.gstatic.com/firebasejs/11.1.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.1.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore-compat.js"></script>
 
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
@@ -32,7 +32,6 @@
         .laos-italic { font-style: italic; }
         .setup-screen { background: #020617; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 2rem; }
         
-        /* Custom Select Styling */
         select { -webkit-appearance: none; -moz-appearance: none; appearance: none; }
     </style>
 </head>
@@ -48,24 +47,32 @@
                 return JSON.parse(__firebase_config);
             }
             return {
-                apiKey: "", // ÖNEMLİ: Firebase Console -> Proje Ayarları kısmından doldurun
+                apiKey: "", // ÖNEMLİ: Buraya Firebase API Key gelmeli
                 authDomain: "laos-61380.firebaseapp.com",
                 projectId: "laos-61380",
                 storageBucket: "laos-61380.appspot.com",
                 messagingSenderId: "833439553703",
-                appId: "" // ÖNEMLİ: Firebase Console -> Proje Ayarları kısmından doldurun
+                appId: "" // ÖNEMLİ: Buraya Firebase App ID gelmeli
             };
         };
 
         const firebaseConfig = getFirebaseConfig();
         const appId = typeof __app_id !== 'undefined' ? __app_id : "cafe-pro-v1";
 
-        // Firebase Başlatma
-        if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
-        const auth = firebase.auth();
-        const db = firebase.firestore();
+        // Firebase Güvenli Başlatma
+        let auth = null;
+        let db = null;
+        const isFirebaseValid = !!(firebaseConfig.apiKey && firebaseConfig.apiKey.length > 5);
 
-        const isFirebaseValid = !!(firebaseConfig.apiKey && firebaseConfig.appId);
+        if (isFirebaseValid) {
+            try {
+                if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+                auth = firebase.auth();
+                db = firebase.firestore();
+            } catch (e) {
+                console.error("Firebase init error:", e);
+            }
+        }
 
         // --- YARDIMCI FONKSİYONLAR ---
         const toNum = (v) => {
@@ -124,7 +131,6 @@
             const [loading, setLoading] = useState(true);
             const [settings, setSettings] = useState({ initialBalance: 15000, defaultCommission: 3.5, defaultValor: 30 });
             
-            // Veri State'leri
             const [dailyLogs, setDailyLogs] = useState([]);
             const [scheduledPayments, setScheduledPayments] = useState([]);
             const [personnel, setPersonnel] = useState([]);
@@ -132,19 +138,20 @@
             const [inventory, setInventory] = useState([]);
             const [products, setProducts] = useState([]);
             
-            // UI State'leri
             const [selectedPersonnelId, setSelectedPersonnelId] = useState(null);
             const [selectedProductId, setSelectedProductId] = useState(null);
             const [showDeleteModal, setShowDeleteModal] = useState({ show: false, col: '', id: '' });
-            const [reportRange, setReportRange] = useState('monthly');
 
-            // --- FİRESTORE YOLLARI ---
-            const pRef = (col) => db.collection('artifacts').doc(appId).collection('public').doc('data').collection(col);
-            const sDoc = () => db.collection('artifacts').doc(appId).collection('public').doc('data').collection('config').doc('app_settings');
+            // Firestore yolları (Sadece Firebase geçerliyse)
+            const pRef = (col) => isFirebaseValid ? db.collection('artifacts').doc(appId).collection('public').doc('data').collection(col) : null;
+            const sDoc = () => isFirebaseValid ? db.collection('artifacts').doc(appId).collection('public').doc('data').collection('config').doc('app_settings') : null;
 
-            // Auth Effect
+            // Yetkilendirme Etkisi
             useEffect(() => {
-                if (!isFirebaseValid) { setLoading(false); return; }
+                if (!isFirebaseValid) {
+                    setLoading(false);
+                    return;
+                }
                 const initAuth = async () => {
                     try {
                         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -152,44 +159,36 @@
                         } else if (!auth.currentUser) {
                             await auth.signInAnonymously();
                         }
-                    } catch (e) { console.error("Giriş Hatası:", e); }
+                    } catch (e) { console.error("Auth Error:", e); }
                 };
                 initAuth();
                 const unsubscribe = auth.onAuthStateChanged(setUser);
                 return () => unsubscribe();
             }, []);
 
-            // Data Fetch Effect
+            // Veri Çekme Etkisi
             useEffect(() => {
                 if (!user || !isFirebaseValid) return;
-                const errorCallback = (err) => console.error("Firestore Hatası:", err);
+                const errorLog = (err) => console.warn("Veri Dinleme Hatası:", err.message);
                 const unsub = [
-                    sDoc().onSnapshot(d => d.exists && setSettings(d.data()), errorCallback),
-                    pRef('dailyLogs').onSnapshot(s => setDailyLogs(s.docs.map(d => ({id: d.id, ...d.data()}))), errorCallback),
-                    pRef('scheduledPayments').onSnapshot(s => setScheduledPayments(s.docs.map(d => ({id: d.id, ...d.data()}))), errorCallback),
-                    pRef('personnel').onSnapshot(s => setPersonnel(s.docs.map(d => ({id: d.id, ...d.data()}))), errorCallback),
-                    pRef('personnelPayments').onSnapshot(s => setPersonnelPayments(s.docs.map(d => ({id: d.id, ...d.data()}))), errorCallback),
-                    pRef('inventory').onSnapshot(s => setInventory(s.docs.map(d => ({id: d.id, ...d.data()}))), errorCallback),
-                    pRef('products').onSnapshot(s => setProducts(s.docs.map(d => ({id: d.id, ...d.data()}))), errorCallback),
+                    sDoc().onSnapshot(d => d.exists && setSettings(d.data()), errorLog),
+                    pRef('dailyLogs').onSnapshot(s => setDailyLogs(s.docs.map(d => ({id: d.id, ...d.data()}))), errorLog),
+                    pRef('scheduledPayments').onSnapshot(s => setScheduledPayments(s.docs.map(d => ({id: d.id, ...d.data()}))), errorLog),
+                    pRef('personnel').onSnapshot(s => setPersonnel(s.docs.map(d => ({id: d.id, ...d.data()}))), errorLog),
+                    pRef('personnelPayments').onSnapshot(s => setPersonnelPayments(s.docs.map(d => ({id: d.id, ...d.data()}))), errorLog),
+                    pRef('inventory').onSnapshot(s => setInventory(s.docs.map(d => ({id: d.id, ...d.data()}))), errorLog),
+                    pRef('products').onSnapshot(s => setProducts(s.docs.map(d => ({id: d.id, ...d.data()}))), errorLog),
                 ];
                 setLoading(false);
-                return () => unsub.forEach(u => u());
+                return () => unsub.forEach(u => u && u());
             }, [user]);
 
-            // --- AKSİYONLAR ---
             const addItem = async (col, data) => {
                 if (isFirebaseValid && user) {
                     await pRef(col).add({ ...data, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
                 } else {
-                    const localSetter = {
-                        dailyLogs: setDailyLogs,
-                        scheduledPayments: setScheduledPayments,
-                        personnel: setPersonnel,
-                        personnelPayments: setPersonnelPayments,
-                        inventory: setInventory,
-                        products: setProducts
-                    };
-                    localSetter[col](prev => [...prev, { id: Date.now().toString(), ...data }]);
+                    const localSetters = { dailyLogs: setDailyLogs, scheduledPayments: setScheduledPayments, personnel: setPersonnel, personnelPayments: setPersonnelPayments, inventory: setInventory, products: setProducts };
+                    localSetters[col](prev => [...prev, { id: Date.now().toString(), ...data }]);
                 }
             };
 
@@ -197,15 +196,8 @@
                 if (isFirebaseValid && user) {
                     await pRef(col).doc(id).update(data);
                 } else {
-                    const localSetter = {
-                        dailyLogs: setDailyLogs,
-                        scheduledPayments: setScheduledPayments,
-                        personnel: setPersonnel,
-                        personnelPayments: setPersonnelPayments,
-                        inventory: setInventory,
-                        products: setProducts
-                    };
-                    localSetter[col](prev => prev.map(item => item.id === id ? { ...item, ...data } : item));
+                    const localSetters = { dailyLogs: setDailyLogs, scheduledPayments: setScheduledPayments, personnel: setPersonnel, personnelPayments: setPersonnelPayments, inventory: setInventory, products: setProducts };
+                    localSetters[col](prev => prev.map(item => item.id === id ? { ...item, ...data } : item));
                 }
             };
 
@@ -214,20 +206,13 @@
                 if (isFirebaseValid && user) {
                     await pRef(col).doc(id).delete();
                 } else {
-                    const localSetter = {
-                        dailyLogs: setDailyLogs,
-                        scheduledPayments: setScheduledPayments,
-                        personnel: setPersonnel,
-                        personnelPayments: setPersonnelPayments,
-                        inventory: setInventory,
-                        products: setProducts
-                    };
-                    localSetter[col](prev => prev.filter(item => item.id !== id));
+                    const localSetters = { dailyLogs: setDailyLogs, scheduledPayments: setScheduledPayments, personnel: setPersonnel, personnelPayments: setPersonnelPayments, inventory: setInventory, products: setProducts };
+                    localSetters[col](prev => prev.filter(item => item.id !== id));
                 }
                 setShowDeleteModal({ show: false, col: '', id: '' });
             };
 
-            // --- HESAPLAMALAR ---
+            // Hesaplamalar
             const totals = useMemo(() => dailyLogs.reduce((acc, log) => ({
                 cash: acc.cash + toNum(log.cash),
                 card: acc.card + toNum(log.card),
@@ -256,43 +241,42 @@
                 return t + (toNum(inv.price) / factor) * toNum(ing.amount);
             }, 0);
 
-            // --- RENDER ---
+            // Giriş Ekranı Kontrolü
             if (!isFirebaseValid && !demoMode) {
                 return (
                     <div className="setup-screen">
                         <div className="white-card p-10 max-w-md w-full text-center space-y-6 shadow-2xl animate-up">
                             <div className="w-16 h-16 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center mx-auto text-3xl">🔑</div>
-                            <h2 className="text-xl font-black text-slate-900 uppercase laos-italic italic">Bağlantı Bekleniyor</h2>
+                            <h2 className="text-xl font-black text-slate-900 uppercase laos-italic italic">Sistem Beklemede</h2>
                             <p className="text-slate-500 text-xs leading-relaxed laos-italic px-4">
-                                Firebase projeniz hazır ancak <b>apiKey</b> ve <b>appId</b> eksik olduğu için veritabanına bağlanılamıyor.
+                                Firebase anahtarları eksik veya geçersiz. Verilerinizi buluta kaydetmek için <b>apiKey</b> ve <b>appId</b> kısımlarını doldurun.
                             </p>
-                            <button onClick={() => setDemoMode(true)} className="w-full bg-slate-900 text-white py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest laos-italic shadow-xl hover:bg-slate-800 transition-all">Uygulamayı Önizle (Demo)</button>
-                            <p className="text-[8px] text-slate-400 font-bold uppercase tracking-widest laos-italic">LAOS PRO SİSTEM KONTROLÜ</p>
+                            <button onClick={() => {setDemoMode(true); setUser({uid: 'demo'}); setLoading(false);}} className="w-full bg-slate-900 text-white py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest laos-italic shadow-xl hover:bg-slate-800 transition-all">Uygulamayı Aç (Demo)</button>
+                            <p className="text-[8px] text-slate-400 font-bold uppercase tracking-widest laos-italic">LAOS PRO SİSTEM YÖNETİCİSİ</p>
                         </div>
                     </div>
                 );
             }
 
-            if (loading && !demoMode) return <div className="h-screen bg-slate-950 flex items-center justify-center text-amber-500 font-black animate-pulse text-[10px] uppercase laos-italic">Laos Connect...</div>;
+            if (loading && !demoMode) return <div className="h-screen bg-slate-950 flex items-center justify-center text-amber-500 font-black animate-pulse text-[10px] uppercase laos-italic italic tracking-widest">Laos Connect...</div>;
 
             return (
                 <div className="min-h-screen flex flex-col md:flex-row pb-20 md:pb-0 bg-[#F8FAFC]">
-                    
-                    {/* MODAL & STATUS */}
+                    {/* MODALLAR */}
                     {showDeleteModal.show && (
                         <div className="fixed inset-0 flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-sm z-[2000]">
                             <div className="bg-white rounded-[2.5rem] p-8 max-w-xs w-full shadow-2xl animate-up text-center">
                                 <h3 className="text-xs font-black text-slate-900 mb-6 uppercase laos-italic italic">Bu kayıt silinsin mi?</h3>
                                 <div className="flex gap-3">
                                     <button onClick={() => setShowDeleteModal({show:false})} className="flex-1 py-3 rounded-xl bg-slate-100 text-slate-500 font-black text-[9px] uppercase laos-italic">Vazgeç</button>
-                                    <button onClick={confirmDelete} className="flex-1 py-3 rounded-xl bg-red-500 text-white font-black text-[9px] uppercase laos-italic shadow-lg shadow-red-200">Sil</button>
+                                    <button onClick={confirmDelete} className="flex-1 py-3 rounded-xl bg-red-500 text-white font-black text-[9px] uppercase laos-italic shadow-lg">Sil</button>
                                 </div>
                             </div>
                         </div>
                     )}
 
                     {/* NAVİGASYON */}
-                    <nav className="fixed bottom-0 left-0 right-0 md:relative md:w-20 lg:w-64 bg-slate-950 text-white p-2 md:p-4 flex md:flex-col justify-around md:justify-start gap-1 z-50 shadow-2xl">
+                    <nav className="fixed bottom-0 left-0 right-0 md:relative md:w-20 lg:w-64 bg-slate-950 text-white p-2 md:p-4 flex md:flex-col justify-around md:justify-start gap-1 z-50">
                         <div className="hidden md:flex items-center gap-3 mb-10 px-2">
                             <div className="w-9 h-9 bg-amber-500 rounded-lg flex items-center justify-center text-slate-950 font-black laos-italic text-xs italic">L</div>
                             <h2 className="hidden lg:block font-black text-sm laos-italic uppercase text-amber-500 italic">Kafe Analiz</h2>
@@ -304,13 +288,12 @@
                             <button key={t.id} onClick={() => {setActiveTab(t.id); setSelectedPersonnelId(null); setSelectedProductId(null);}} 
                                 className={`flex flex-col md:flex-row items-center gap-1 md:gap-3 p-2.5 rounded-xl transition-all flex-1 md:flex-none ${activeTab === t.id ? 'bg-amber-500 text-slate-950 font-black shadow-lg shadow-amber-500/20' : 'text-slate-500 hover:text-slate-200'}`}>
                                 <span className="text-base">{t.i}</span> 
-                                <span className="text-[7px] lg:text-[10px] font-black uppercase tracking-tight text-center lg:text-left laos-italic italic">{t.l}</span>
+                                <span className="text-[7px] lg:text-[10px] font-black uppercase tracking-tight laos-italic italic">{t.l}</span>
                             </button>
                         ))}
                     </nav>
 
                     <main className="flex-1 p-3 md:p-10 lg:p-14 overflow-y-auto no-scrollbar">
-                        
                         {activeTab === 'dashboard' && (
                             <div className="max-w-4xl mx-auto space-y-6 animate-up">
                                 <div className="premium-dark p-6 md:p-12 text-white shadow-2xl relative overflow-hidden">
