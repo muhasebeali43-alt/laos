@@ -31,6 +31,9 @@
         .premium-dark { background: #020617; border-bottom: 8px solid #f59e0b; border-radius: 2.5rem; }
         .laos-italic { font-style: italic; }
         .setup-screen { background: #020617; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 2rem; }
+        
+        /* Custom Select Styling */
+        select { -webkit-appearance: none; -moz-appearance: none; appearance: none; }
     </style>
 </head>
 <body>
@@ -57,7 +60,7 @@
         const firebaseConfig = getFirebaseConfig();
         const appId = typeof __app_id !== 'undefined' ? __app_id : "cafe-pro-v1";
 
-        // Firebase Başlatma (Bileşen dışında başlatılmalı)
+        // Firebase Başlatma
         if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
         const auth = firebase.auth();
         const db = firebase.firestore();
@@ -100,10 +103,16 @@
         );
 
         const MethodSelector = ({ value, onChange, className = "" }) => (
-            <select value={value || 'nakit'} onChange={(e) => onChange(e.target.value)} 
-                className={`bg-slate-50 border border-slate-200 rounded px-2 py-1 text-[9px] font-bold uppercase text-slate-700 focus:ring-1 focus:ring-amber-500 outline-none laos-italic ${className}`}>
-                <option value="nakit">Nakit</option><option value="kart">Kart</option><option value="havale">Havale</option><option value="cek">Çek</option>
-            </select>
+            <div className="relative inline-block">
+                <select value={value || 'nakit'} onChange={(e) => onChange(e.target.value)} 
+                    className={`bg-slate-50 border border-slate-200 rounded px-2 py-1 text-[9px] font-bold uppercase text-slate-700 focus:ring-1 focus:ring-amber-500 outline-none laos-italic pr-4 ${className}`}>
+                    <option value="nakit">Nakit</option>
+                    <option value="kart">Kart</option>
+                    <option value="havale">Havale</option>
+                    <option value="cek">Çek</option>
+                </select>
+                <div className="absolute inset-y-0 right-1 flex items-center pointer-events-none text-[8px] text-slate-400">▼</div>
+            </div>
         );
 
         // --- ANA UYGULAMA ---
@@ -114,12 +123,16 @@
             const [recipeSubTab, setRecipeSubTab] = useState('inventory');
             const [loading, setLoading] = useState(true);
             const [settings, setSettings] = useState({ initialBalance: 15000, defaultCommission: 3.5, defaultValor: 30 });
+            
+            // Veri State'leri
             const [dailyLogs, setDailyLogs] = useState([]);
             const [scheduledPayments, setScheduledPayments] = useState([]);
             const [personnel, setPersonnel] = useState([]);
             const [personnelPayments, setPersonnelPayments] = useState([]);
             const [inventory, setInventory] = useState([]);
             const [products, setProducts] = useState([]);
+            
+            // UI State'leri
             const [selectedPersonnelId, setSelectedPersonnelId] = useState(null);
             const [selectedProductId, setSelectedProductId] = useState(null);
             const [showDeleteModal, setShowDeleteModal] = useState({ show: false, col: '', id: '' });
@@ -129,13 +142,9 @@
             const pRef = (col) => db.collection('artifacts').doc(appId).collection('public').doc('data').collection(col);
             const sDoc = () => db.collection('artifacts').doc(appId).collection('public').doc('data').collection('config').doc('app_settings');
 
-            // 1. Yetkilendirme Effect
+            // Auth Effect
             useEffect(() => {
-                if (!isFirebaseValid) {
-                    setLoading(false);
-                    return;
-                }
-
+                if (!isFirebaseValid) { setLoading(false); return; }
                 const initAuth = async () => {
                     try {
                         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -145,18 +154,15 @@
                         }
                     } catch (e) { console.error("Giriş Hatası:", e); }
                 };
-
                 initAuth();
                 const unsubscribe = auth.onAuthStateChanged(setUser);
                 return () => unsubscribe();
             }, []);
 
-            // 2. Veri Çekme Effect (User varsa çalışır)
+            // Data Fetch Effect
             useEffect(() => {
                 if (!user || !isFirebaseValid) return;
-
                 const errorCallback = (err) => console.error("Firestore Hatası:", err);
-
                 const unsub = [
                     sDoc().onSnapshot(d => d.exists && setSettings(d.data()), errorCallback),
                     pRef('dailyLogs').onSnapshot(s => setDailyLogs(s.docs.map(d => ({id: d.id, ...d.data()}))), errorCallback),
@@ -169,6 +175,57 @@
                 setLoading(false);
                 return () => unsub.forEach(u => u());
             }, [user]);
+
+            // --- AKSİYONLAR ---
+            const addItem = async (col, data) => {
+                if (isFirebaseValid && user) {
+                    await pRef(col).add({ ...data, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+                } else {
+                    const localSetter = {
+                        dailyLogs: setDailyLogs,
+                        scheduledPayments: setScheduledPayments,
+                        personnel: setPersonnel,
+                        personnelPayments: setPersonnelPayments,
+                        inventory: setInventory,
+                        products: setProducts
+                    };
+                    localSetter[col](prev => [...prev, { id: Date.now().toString(), ...data }]);
+                }
+            };
+
+            const updateItem = async (col, id, data) => {
+                if (isFirebaseValid && user) {
+                    await pRef(col).doc(id).update(data);
+                } else {
+                    const localSetter = {
+                        dailyLogs: setDailyLogs,
+                        scheduledPayments: setScheduledPayments,
+                        personnel: setPersonnel,
+                        personnelPayments: setPersonnelPayments,
+                        inventory: setInventory,
+                        products: setProducts
+                    };
+                    localSetter[col](prev => prev.map(item => item.id === id ? { ...item, ...data } : item));
+                }
+            };
+
+            const confirmDelete = async () => {
+                const { col, id } = showDeleteModal;
+                if (isFirebaseValid && user) {
+                    await pRef(col).doc(id).delete();
+                } else {
+                    const localSetter = {
+                        dailyLogs: setDailyLogs,
+                        scheduledPayments: setScheduledPayments,
+                        personnel: setPersonnel,
+                        personnelPayments: setPersonnelPayments,
+                        inventory: setInventory,
+                        products: setProducts
+                    };
+                    localSetter[col](prev => prev.filter(item => item.id !== id));
+                }
+                setShowDeleteModal({ show: false, col: '', id: '' });
+            };
 
             // --- HESAPLAMALAR ---
             const totals = useMemo(() => dailyLogs.reduce((acc, log) => ({
@@ -199,21 +256,17 @@
                 return t + (toNum(inv.price) / factor) * toNum(ing.amount);
             }, 0);
 
-            const confirmDelete = async () => {
-                if (isFirebaseValid && user) await pRef(showDeleteModal.col).doc(showDeleteModal.id).delete();
-                setShowDeleteModal({ show: false, col: '', id: '' });
-            };
-
+            // --- RENDER ---
             if (!isFirebaseValid && !demoMode) {
                 return (
                     <div className="setup-screen">
                         <div className="white-card p-10 max-w-md w-full text-center space-y-6 shadow-2xl animate-up">
                             <div className="w-16 h-16 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center mx-auto text-3xl">🔑</div>
-                            <h2 className="text-xl font-black text-slate-900 uppercase laos-italic">Bağlantı Bekleniyor</h2>
-                            <p className="text-slate-500 text-xs leading-relaxed laos-italic">
+                            <h2 className="text-xl font-black text-slate-900 uppercase laos-italic italic">Bağlantı Bekleniyor</h2>
+                            <p className="text-slate-500 text-xs leading-relaxed laos-italic px-4">
                                 Firebase projeniz hazır ancak <b>apiKey</b> ve <b>appId</b> eksik olduğu için veritabanına bağlanılamıyor.
                             </p>
-                            <button onClick={() => setDemoMode(true)} className="w-full bg-slate-900 text-white py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest laos-italic shadow-xl">Uygulamayı Önizle (Demo)</button>
+                            <button onClick={() => setDemoMode(true)} className="w-full bg-slate-900 text-white py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest laos-italic shadow-xl hover:bg-slate-800 transition-all">Uygulamayı Önizle (Demo)</button>
                             <p className="text-[8px] text-slate-400 font-bold uppercase tracking-widest laos-italic">LAOS PRO SİSTEM KONTROLÜ</p>
                         </div>
                     </div>
@@ -232,14 +285,14 @@
                                 <h3 className="text-xs font-black text-slate-900 mb-6 uppercase laos-italic italic">Bu kayıt silinsin mi?</h3>
                                 <div className="flex gap-3">
                                     <button onClick={() => setShowDeleteModal({show:false})} className="flex-1 py-3 rounded-xl bg-slate-100 text-slate-500 font-black text-[9px] uppercase laos-italic">Vazgeç</button>
-                                    <button onClick={confirmDelete} className="flex-1 py-3 rounded-xl bg-red-500 text-white font-black text-[9px] uppercase laos-italic">Sil</button>
+                                    <button onClick={confirmDelete} className="flex-1 py-3 rounded-xl bg-red-500 text-white font-black text-[9px] uppercase laos-italic shadow-lg shadow-red-200">Sil</button>
                                 </div>
                             </div>
                         </div>
                     )}
 
                     {/* NAVİGASYON */}
-                    <nav className="fixed bottom-0 left-0 right-0 md:relative md:w-20 lg:w-64 bg-slate-950 text-white p-2 md:p-4 flex md:flex-col justify-around md:justify-start gap-1 z-50">
+                    <nav className="fixed bottom-0 left-0 right-0 md:relative md:w-20 lg:w-64 bg-slate-950 text-white p-2 md:p-4 flex md:flex-col justify-around md:justify-start gap-1 z-50 shadow-2xl">
                         <div className="hidden md:flex items-center gap-3 mb-10 px-2">
                             <div className="w-9 h-9 bg-amber-500 rounded-lg flex items-center justify-center text-slate-950 font-black laos-italic text-xs italic">L</div>
                             <h2 className="hidden lg:block font-black text-sm laos-italic uppercase text-amber-500 italic">Kafe Analiz</h2>
@@ -281,7 +334,7 @@
                                 </div>
                                 <div className="bg-slate-950 p-6 rounded-3xl border border-slate-800">
                                     <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1 laos-italic italic">Kasa Başlangıç Bakiyesi</p>
-                                    <MoneyInput value={settings.initialBalance} onChange={(v) => isFirebaseValid && user ? sDoc().set({ initialBalance: v }, { merge: true }) : setSettings(s => ({...s, initialBalance: v}))} className="text-2xl md:text-4xl font-black bg-transparent w-full text-amber-500 laos-italic italic" />
+                                    <MoneyInput value={settings.initialBalance} onChange={(v) => isFirebaseValid && user ? sDoc().set({ initialBalance: v }, { merge: true }) : setSettings(s => ({...s, initialBalance: v}))} className="text-2xl md:text-4xl font-black bg-transparent w-full text-amber-500 laos-italic italic tracking-tighter" />
                                 </div>
                             </div>
                         )}
@@ -290,19 +343,19 @@
                             <div className="max-w-4xl mx-auto space-y-4 animate-up">
                                 <div className="bg-slate-950 p-6 rounded-[2.5rem] flex justify-between items-center mb-10 shadow-2xl border-b-8 border-amber-500">
                                     <h2 className="text-white font-black text-lg md:text-3xl uppercase laos-italic laos-gradient-text tracking-tighter italic">GÜNLÜK GİRİŞLER</h2>
-                                    <button onClick={() => isFirebaseValid && user ? pRef('dailyLogs').add({ date: new Date().toISOString().split('T')[0], cash: 0, card: 0, dailyLoan: 0 }) : setDailyLogs(d => [...d, {id:Date.now(), date: new Date().toISOString().split('T')[0], cash: 0, card: 0, dailyLoan: 0}])} className="bg-amber-500 text-slate-950 px-6 py-3 rounded-2xl font-black text-[10px] uppercase laos-italic italic shadow-lg">YENİ GÜN</button>
+                                    <button onClick={() => addItem('dailyLogs', { date: new Date().toISOString().split('T')[0], cash: 0, card: 0, dailyLoan: 0 })} className="bg-amber-500 text-slate-950 px-6 py-3 rounded-2xl font-black text-[10px] uppercase laos-italic italic shadow-lg active:scale-95 transition-all">YENİ GÜN</button>
                                 </div>
                                 {dailyLogs.sort((a,b) => new Date(b.date) - new Date(a.date)).map(log => (
                                     <div key={log.id} className="white-card p-6 md:p-10 space-y-8 animate-up">
                                         <div className="flex justify-between items-center">
-                                            <div className="bg-slate-950 px-4 py-2 rounded-xl text-amber-500 border border-white/10 shadow-xl"><DateInput value={log.date} onChange={(d) => isFirebaseValid && user ? pRef('dailyLogs').doc(log.id).update({ date: d }) : setDailyLogs(dl => dl.map(x => x.id === log.id ? {...x, date: d} : x))} /></div>
+                                            <div className="bg-slate-950 px-4 py-2 rounded-xl text-amber-500 border border-white/10 shadow-xl"><DateInput value={log.date} onChange={(d) => updateItem('dailyLogs', log.id, { date: d })} /></div>
                                             <button onClick={() => setShowDeleteModal({show:true, col:'dailyLogs', id:log.id})} className="text-red-500 p-2.5 bg-red-50 rounded-xl font-black text-[10px] uppercase laos-italic">SİL</button>
                                         </div>
                                         <div className="grid grid-cols-2 gap-6">
-                                            <div className="bg-slate-50 p-5 rounded-[2rem] border text-center shadow-inner"><p className="text-[8px] font-black text-slate-400 mb-2 uppercase laos-italic italic">NAKİT SATIŞ</p><MoneyInput value={log.cash} onChange={(v) => isFirebaseValid && user ? pRef('dailyLogs').doc(log.id).update({ cash: v }) : setDailyLogs(dl => dl.map(x => x.id === log.id ? {...x, cash: v} : x))} className="w-full bg-transparent font-black text-sm md:text-3xl text-center laos-italic italic" /></div>
-                                            <div className="bg-blue-50/50 p-5 rounded-[2rem] border border-blue-100 text-center shadow-inner"><p className="text-[8px] font-black text-blue-500 mb-2 uppercase laos-italic italic">POS SATIŞ</p><MoneyInput value={log.card} onChange={(v) => isFirebaseValid && user ? pRef('dailyLogs').doc(log.id).update({ card: v }) : setDailyLogs(dl => dl.map(x => x.id === log.id ? {...x, card: v} : x))} className="w-full bg-transparent font-black text-sm md:text-3xl text-center text-blue-700 laos-italic italic" /></div>
+                                            <div className="bg-slate-50 p-5 rounded-[2rem] border text-center shadow-inner"><p className="text-[8px] font-black text-slate-400 mb-2 uppercase laos-italic italic">NAKİT SATIŞ</p><MoneyInput value={log.cash} onChange={(v) => updateItem('dailyLogs', log.id, { cash: v })} className="w-full bg-transparent font-black text-sm md:text-3xl text-center laos-italic italic" /></div>
+                                            <div className="bg-blue-50/50 p-5 rounded-[2rem] border border-blue-100 text-center shadow-inner"><p className="text-[8px] font-black text-blue-500 mb-2 uppercase laos-italic italic">POS SATIŞ</p><MoneyInput value={log.card} onChange={(v) => updateItem('dailyLogs', log.id, { card: v })} className="w-full bg-transparent font-black text-sm md:text-3xl text-center text-blue-700 laos-italic italic" /></div>
                                         </div>
-                                        <div className="bg-slate-950 p-6 rounded-[2rem] border border-slate-800 text-center shadow-2xl"><p className="text-[8px] font-black text-amber-500 mb-2 uppercase laos-italic italic">DIŞ KAYNAK / KREDİ GİRİŞİ</p><MoneyInput value={log.dailyLoan || 0} onChange={(v) => isFirebaseValid && user ? pRef('dailyLogs').doc(log.id).update({ dailyLoan: v }) : setDailyLogs(dl => dl.map(x => x.id === log.id ? {...x, dailyLoan: v} : x))} className="w-full bg-transparent font-black text-xl md:text-5xl text-white laos-italic text-center italic tracking-tighter" /></div>
+                                        <div className="bg-slate-950 p-6 rounded-[2rem] border border-slate-800 text-center shadow-2xl"><p className="text-[8px] font-black text-amber-500 mb-2 uppercase laos-italic italic">DIŞ KAYNAK / KREDİ GİRİŞİ</p><MoneyInput value={log.dailyLoan || 0} onChange={(v) => updateItem('dailyLogs', log.id, { dailyLoan: v })} className="w-full bg-transparent font-black text-xl md:text-5xl text-white laos-italic text-center italic tracking-tighter" /></div>
                                     </div>
                                 ))}
                             </div>
@@ -339,7 +392,7 @@
                                     <>
                                         <div className="bg-slate-950 p-6 rounded-[2.5rem] border-b-8 border-amber-500 flex justify-between items-center shadow-2xl">
                                             <h2 className="text-white font-black text-lg md:text-3xl uppercase laos-italic laos-gradient-text italic tracking-tighter">EKİP YÖNETİMİ</h2>
-                                            <button onClick={() => isFirebaseValid && user ? pRef('personnel').add({ name: 'Yeni Personel', fixedSalary: 50000 }) : setPersonnel(p => [...p, {id:Date.now(), name:'Yeni Personel', fixedSalary:50000}])} className="bg-amber-500 text-slate-950 px-8 py-3 rounded-2xl font-black text-[10px] uppercase laos-italic italic shadow-lg transition-transform active:scale-95">EKLE</button>
+                                            <button onClick={() => addItem('personnel', { name: 'Yeni Personel', fixedSalary: 50000 })} className="bg-amber-500 text-slate-950 px-8 py-3 rounded-2xl font-black text-[10px] uppercase laos-italic italic shadow-lg transition-transform active:scale-95">EKLE</button>
                                         </div>
                                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
                                             {personnel.map(p => {
@@ -362,10 +415,10 @@
                                             const bal = toNum(p.fixedSalary) - myPays.reduce((s, pay) => s + toNum(pay.amount), 0);
                                             return (
                                                 <div key={p.id} className="space-y-8">
-                                                    <div className="premium-dark p-10 md:p-14 text-white shadow-2xl"><input value={p.name} onChange={(e) => isFirebaseValid && user ? pRef('personnel').doc(p.id).update({ name: e.target.value }) : setPersonnel(ps => ps.map(x => x.id === p.id ? {...x, name: e.target.value} : x))} className="text-2xl md:text-6xl font-black bg-transparent w-full uppercase text-amber-500 laos-italic italic mb-12 border-none p-0 outline-none tracking-tighter" /><div className="grid grid-cols-1 md:grid-cols-2 gap-8"><div className="bg-white/5 p-6 rounded-[2rem] border shadow-inner"><p className="text-[9px] font-black text-slate-500 uppercase mb-3 laos-italic italic">SABİT MAAŞ</p><MoneyInput value={p.fixedSalary} onChange={(v) => isFirebaseValid && user ? pRef('personnel').doc(p.id).update({ fixedSalary: v }) : setPersonnel(ps => ps.map(x => x.id === p.id ? {...x, fixedSalary: v} : x))} className="bg-transparent w-full border-none p-0 laos-italic italic text-amber-500 text-2xl md:text-4xl font-black" /></div><div className="bg-white/5 p-6 rounded-[2rem] border text-center shadow-inner"><p className="text-[9px] font-black text-slate-500 uppercase mb-3 laos-italic italic">KALAN ÖDEME</p><p className={`text-2xl md:text-4xl font-black laos-italic italic ${bal > 0 ? 'text-red-400' : 'text-green-400'}`}>{formatCurrency(bal)}</p></div></div></div>
-                                                    <div className="white-card p-8 md:p-12 shadow-sm space-y-8"><div className="flex justify-between items-center border-b pb-6"><h3 className="text-xs font-black uppercase laos-italic italic tracking-widest">ÖDEME İŞLEMLERİ</h3><button onClick={() => isFirebaseValid && user ? pRef('personnelPayments').add({ personnelId: p.id, amount: 0, date: new Date().toISOString().split('T')[0] }) : setPersonnelPayments(ps => [...ps, {id:Date.now(), personnelId:p.id, amount:0, date:new Date().toISOString().split('T')[0]}])} className="bg-slate-950 text-white px-8 py-4 rounded-2xl text-[10px] font-black uppercase laos-italic italic shadow-2xl active:scale-95 transition-all">YENİ ÖDEME</button></div>
+                                                    <div className="premium-dark p-10 md:p-14 text-white shadow-2xl"><input value={p.name} onChange={(e) => updateItem('personnel', p.id, { name: e.target.value })} className="text-2xl md:text-6xl font-black bg-transparent w-full uppercase text-amber-500 laos-italic italic mb-12 border-none p-0 outline-none tracking-tighter" /><div className="grid grid-cols-1 md:grid-cols-2 gap-8"><div className="bg-white/5 p-6 rounded-[2rem] border shadow-inner"><p className="text-[9px] font-black text-slate-500 uppercase mb-3 laos-italic italic">SABİT MAAŞ</p><MoneyInput value={p.fixedSalary} onChange={(v) => updateItem('personnel', p.id, { fixedSalary: v })} className="bg-transparent w-full border-none p-0 laos-italic italic text-amber-500 text-2xl md:text-4xl font-black" /></div><div className="bg-white/5 p-6 rounded-[2rem] border text-center shadow-inner"><p className="text-[9px] font-black text-slate-500 uppercase mb-3 laos-italic italic">KALAN ÖDEME</p><p className={`text-2xl md:text-4xl font-black laos-italic italic ${bal > 0 ? 'text-red-400' : 'text-green-400'}`}>{formatCurrency(bal)}</p></div></div></div>
+                                                    <div className="white-card p-8 md:p-12 shadow-sm space-y-8"><div className="flex justify-between items-center border-b pb-6"><h3 className="text-xs font-black uppercase laos-italic italic tracking-widest">ÖDEME İŞLEMLERİ</h3><button onClick={() => addItem('personnelPayments', { personnelId: p.id, amount: 0, date: new Date().toISOString().split('T')[0], method: 'nakit' })} className="bg-slate-950 text-white px-8 py-4 rounded-2xl text-[10px] font-black uppercase laos-italic italic shadow-2xl active:scale-95 transition-all">YENİ ÖDEME</button></div>
                                                         {myPays.map(pay => (
-                                                            <div key={pay.id} className="flex flex-col sm:flex-row items-center justify-between gap-6 p-6 bg-slate-50 rounded-[2rem] border border-slate-100 shadow-sm"><div className="flex items-center gap-6"><DateInput value={pay.date} onChange={(d) => isFirebaseValid && user ? pRef('personnelPayments').doc(pay.id).update({ date: d }) : setPersonnelPayments(ps => ps.map(x => x.id === pay.id ? {...x, date: d} : x))} /></div><div className="flex items-center gap-6"><MoneyInput value={pay.amount} onChange={(v) => isFirebaseValid && user ? pRef('personnelPayments').doc(pay.id).update({ amount: v }) : setPersonnelPayments(ps => ps.map(x => x.id === pay.id ? {...x, amount: v} : x))} className="bg-transparent font-black text-sm md:text-2xl text-right w-24 md:w-48 border-none p-0 focus:ring-0 laos-italic italic" /><button onClick={() => setShowDeleteModal({show:true, col:'personnelPayments', id:pay.id})} className="text-red-400 p-3 bg-white rounded-xl shadow-sm italic hover:bg-red-500 hover:text-white transition-all">SİL</button></div></div>
+                                                            <div key={pay.id} className="flex flex-col sm:flex-row items-center justify-between gap-6 p-6 bg-slate-50 rounded-[2rem] border border-slate-100 shadow-sm"><div className="flex items-center gap-6"><DateInput value={pay.date} onChange={(d) => updateItem('personnelPayments', pay.id, { date: d })} /><MethodSelector value={pay.method} onChange={(m) => updateItem('personnelPayments', pay.id, { method: m })} /></div><div className="flex items-center gap-6"><MoneyInput value={pay.amount} onChange={(v) => updateItem('personnelPayments', pay.id, { amount: v })} className="bg-transparent font-black text-sm md:text-2xl text-right w-24 md:w-48 border-none p-0 focus:ring-0 laos-italic italic" /><button onClick={() => setShowDeleteModal({show:true, col:'personnelPayments', id:pay.id})} className="text-red-400 p-3 bg-white rounded-xl shadow-sm italic hover:bg-red-500 hover:text-white transition-all">SİL</button></div></div>
                                                         ))}
                                                     </div>
                                                 </div>
@@ -380,12 +433,12 @@
                             <div className="max-w-2xl mx-auto space-y-6 animate-up">
                                 <div className="bg-slate-950 p-6 rounded-[2.5rem] border-b-8 border-amber-500 flex justify-between items-center shadow-2xl">
                                     <h2 className="text-white font-black text-lg md:text-3xl uppercase laos-italic laos-gradient-text italic tracking-tighter">ÖDEME PLANI</h2>
-                                    <button onClick={() => isFirebaseValid && user ? pRef('scheduledPayments').add({ label: 'Yeni Gider', amount: 0, status: 'pending', date: new Date().toISOString().split('T')[0] }) : setScheduledPayments(ps => [...ps, {id:Date.now(), label:'Yeni Gider', amount:0, status:'pending', date:new Date().toISOString().split('T')[0]}])} className="bg-amber-500 text-slate-950 px-8 py-3 rounded-2xl font-black text-[10px] uppercase laos-italic italic shadow-lg">EKLE</button>
+                                    <button onClick={() => addItem('scheduledPayments', { label: 'Yeni Gider', amount: 0, status: 'pending', date: new Date().toISOString().split('T')[0] })} className="bg-amber-500 text-slate-950 px-8 py-3 rounded-2xl font-black text-[10px] uppercase laos-italic italic shadow-lg active:scale-95 transition-all">EKLE</button>
                                 </div>
                                 {scheduledPayments.sort((a,b) => new Date(b.date) - new Date(a.date)).map(p => (
                                     <div key={p.id} className={`bg-white rounded-[2.5rem] p-8 flex flex-col md:flex-row justify-between items-center gap-6 transition-all ${p.status === 'paid' ? 'opacity-30 grayscale' : 'shadow-sm border-l-[10px] border-red-500 hover:shadow-xl'}`}>
-                                        <div className="flex-1 w-full space-y-4"><DateInput value={p.date} onChange={(d) => isFirebaseValid && user ? pRef('scheduledPayments').doc(p.id).update({ date: d }) : setScheduledPayments(ps => ps.map(x => x.id === p.id ? {...x, date: d} : x))} /><input value={p.label} onChange={(e) => isFirebaseValid && user ? pRef('scheduledPayments').doc(p.id).update({ label: e.target.value }) : setScheduledPayments(ps => ps.map(x => x.id === p.id ? {...x, label: e.target.value} : x))} className="font-black text-sm md:text-2xl w-full uppercase border-none p-0 focus:ring-0 laos-italic italic text-slate-800 outline-none" /><MoneyInput value={p.amount} onChange={(v) => isFirebaseValid && user ? pRef('scheduledPayments').doc(p.id).update({ amount: v }) : setScheduledPayments(ps => ps.map(x => x.id === p.id ? {...x, amount: v} : x))} className="bg-transparent w-full border-none p-0 focus:ring-0 font-black text-lg md:text-3xl laos-italic italic tracking-tighter" /></div>
-                                        <div className="flex gap-4 w-full md:w-auto border-t md:border-none pt-6 md:pt-0"><button onClick={() => isFirebaseValid && user ? pRef('scheduledPayments').doc(p.id).update({ status: p.status === 'paid' ? 'pending' : 'paid' }) : setScheduledPayments(ps => ps.map(x => x.id === p.id ? {...x, status: x.status === 'paid' ? 'pending' : 'paid'} : x))} className={`flex-1 px-8 py-4 rounded-2xl font-black text-[10px] uppercase laos-italic italic transition-all shadow-xl ${p.status === 'paid' ? 'bg-green-500 text-white shadow-green-200' : 'bg-slate-950 text-white shadow-slate-200 active:scale-95'}`}>{p.status === 'paid' ? 'ÖDENDİ' : 'ÖDEME YAP'}</button><button onClick={() => setShowDeleteModal({show:true, col:'scheduledPayments', id:p.id})} className="text-red-400 p-3 bg-red-50 rounded-2xl hover:bg-red-500 hover:text-white transition-all laos-italic italic">SİL</button></div>
+                                        <div className="flex-1 w-full space-y-4"><DateInput value={p.date} onChange={(d) => updateItem('scheduledPayments', p.id, { date: d })} /><input value={p.label} onChange={(e) => updateItem('scheduledPayments', p.id, { label: e.target.value })} className="font-black text-sm md:text-2xl w-full uppercase border-none p-0 focus:ring-0 laos-italic italic text-slate-800 outline-none" /><MoneyInput value={p.amount} onChange={(v) => updateItem('scheduledPayments', p.id, { amount: v })} className="bg-transparent w-full border-none p-0 focus:ring-0 font-black text-lg md:text-3xl laos-italic italic tracking-tighter" /></div>
+                                        <div className="flex gap-4 w-full md:w-auto border-t md:border-none pt-6 md:pt-0"><button onClick={() => updateItem('scheduledPayments', p.id, { status: p.status === 'paid' ? 'pending' : 'paid' })} className={`flex-1 px-8 py-4 rounded-2xl font-black text-[10px] uppercase laos-italic italic transition-all shadow-xl ${p.status === 'paid' ? 'bg-green-500 text-white shadow-green-200' : 'bg-slate-950 text-white shadow-slate-200 active:scale-95'}`}>{p.status === 'paid' ? 'ÖDENDİ' : 'ÖDEMEYİ YAP'}</button><button onClick={() => setShowDeleteModal({show:true, col:'scheduledPayments', id:p.id})} className="text-red-400 p-3 bg-red-50 rounded-2xl hover:bg-red-500 hover:text-white transition-all laos-italic italic">SİL</button></div>
                                     </div>
                                 ))}
                             </div>
@@ -398,22 +451,23 @@
                                     <div className="flex bg-white/5 p-1.5 rounded-[1.5rem] border shadow-inner"><button onClick={() => {setRecipeSubTab('inventory'); setSelectedProductId(null);}} className={`px-8 py-3 rounded-2xl text-[9px] font-black uppercase transition-all laos-italic italic tracking-widest ${recipeSubTab === 'inventory' ? 'bg-amber-500 text-slate-950 shadow-lg' : 'text-slate-500'}`}>DEPO</button><button onClick={() => setRecipeSubTab('products')} className={`px-8 py-3 rounded-2xl text-[9px] font-black uppercase transition-all laos-italic italic tracking-widest ${recipeSubTab === 'products' ? 'bg-amber-500 text-slate-950 shadow-lg' : 'text-slate-500'}`}>ÜRÜNLER</button></div>
                                 </header>
                                 {recipeSubTab === 'inventory' && (
-                                    <div className="space-y-6"><div className="flex justify-end"><button onClick={() => isFirebaseValid && user ? pRef('inventory').add({ name: 'Yeni Malzeme', price: 0, unit: 'kg' }) : setInventory(i => [...i, {id:Date.now(), name:'Yeni Malzeme', price:0, unit:'kg'}])} className="bg-amber-500 text-slate-950 px-8 py-3 rounded-2xl font-black text-[10px] uppercase laos-italic italic shadow-lg active:scale-95 transition-all">MALZEME EKLE</button></div>
+                                    <div className="space-y-6"><div className="flex justify-end"><button onClick={() => addItem('inventory', { name: 'Yeni Malzeme', price: 0, unit: 'kg' })} className="bg-amber-500 text-slate-950 px-8 py-3 rounded-2xl font-black text-[10px] uppercase laos-italic italic shadow-lg active:scale-95 transition-all">MALZEME EKLE</button></div>
                                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
                                             {inventory.map(item => (
-                                                <div key={item.id} className="white-card p-6 rounded-[2rem] shadow-sm space-y-6 hover:border-amber-400 transition-all"><div className="flex justify-between items-center border-b pb-4"><input value={item.name} onChange={(e) => isFirebaseValid && user ? pRef('inventory').doc(item.id).update({ name: e.target.value }) : setInventory(ins => ins.map(x => x.id === item.id ? {...x, name: e.target.value} : x))} className="font-black text-sm uppercase bg-transparent border-none p-0 focus:ring-0 laos-italic italic outline-none w-full" /><button onClick={() => setShowDeleteModal({show:true, col:'inventory', id:item.id})} className="text-red-400 p-2">SİL</button></div>
-                                                    <div className="flex items-center gap-4 bg-slate-50 p-4 rounded-2xl border shadow-inner"><p className="text-[8px] font-black text-slate-400 uppercase laos-italic italic tracking-widest">BİRİM FİYAT</p><div className="flex-1 flex justify-end items-center gap-2"><MoneyInput value={item.price} onChange={(v) => isFirebaseValid && user ? pRef('inventory').doc(item.id).update({ price: v }) : setInventory(ins => ins.map(x => x.id === item.id ? {...x, price: v} : x))} className="bg-transparent text-right font-black text-lg border-none p-0 focus:ring-0 w-28 laos-italic italic" /><span className="text-[9px] font-black text-slate-400 laos-italic italic">₺ / </span><select value={item.unit} onChange={(e) => isFirebaseValid && user ? pRef('inventory').doc(item.id).update({ unit: e.target.value }) : setInventory(ins => ins.map(x => x.id === item.id ? {...x, unit: e.target.value} : x))} className="bg-transparent border-none p-0 text-[10px] font-black text-slate-700 uppercase focus:ring-0 cursor-pointer laos-italic italic outline-none"><option value="kg">kg</option><option value="gr">gr</option><option value="L">L</option><option value="ml">ml</option><option value="Adet">Adet</option></select></div></div></div>
+                                                <div key={item.id} className="white-card p-6 rounded-[2rem] shadow-sm space-y-6 hover:border-amber-400 transition-all"><div className="flex justify-between items-center border-b pb-4"><input value={item.name} onChange={(e) => updateItem('inventory', item.id, { name: e.target.value })} className="font-black text-sm uppercase bg-transparent border-none p-0 focus:ring-0 laos-italic italic outline-none w-full" /><button onClick={() => setShowDeleteModal({show:true, col:'inventory', id:item.id})} className="text-red-400 p-2">SİL</button></div>
+                                                    <div className="flex items-center gap-4 bg-slate-50 p-4 rounded-2xl border shadow-inner"><p className="text-[8px] font-black text-slate-400 uppercase laos-italic italic tracking-widest">BİRİM FİYAT</p><div className="flex-1 flex justify-end items-center gap-2"><MoneyInput value={item.price} onChange={(v) => updateItem('inventory', item.id, { price: v })} className="bg-transparent text-right font-black text-lg border-none p-0 focus:ring-0 w-28 laos-italic italic" /><span className="text-[9px] font-black text-slate-400 laos-italic italic">₺ / </span><select value={item.unit} onChange={(e) => updateItem('inventory', item.id, { unit: e.target.value })} className="bg-transparent border-none p-0 text-[10px] font-black text-slate-700 uppercase focus:ring-0 cursor-pointer laos-italic italic outline-none"><option value="kg">kg</option><option value="gr">gr</option><option value="L">L</option><option value="ml">ml</option><option value="Adet">Adet</option></select></div></div></div>
                                             ))}
                                         </div>
                                     </div>
                                 )}
                                 {recipeSubTab === 'products' && !selectedProductId && (
-                                    <div className="space-y-6"><div className="flex justify-end"><button onClick={() => isFirebaseValid && user ? pRef('products').add({ name: 'Yeni Ürün', salePrice: 0, ingredients: [] }) : setProducts(ps => [...ps, {id:Date.now(), name:'Yeni Ürün', salePrice:0, ingredients:[]}])} className="bg-amber-500 text-slate-950 px-8 py-3 rounded-2xl font-black text-[10px] uppercase laos-italic italic shadow-lg active:scale-95 transition-all">ÜRÜN EKLE</button></div>
+                                    <div className="space-y-6"><div className="flex justify-end"><button onClick={() => addItem('products', { name: 'Yeni Ürün', salePrice: 0, ingredients: [] })} className="bg-amber-500 text-slate-950 px-8 py-3 rounded-2xl font-black text-[10px] uppercase laos-italic italic shadow-lg active:scale-95 transition-all">ÜRÜN EKLE</button></div>
                                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
                                             {products.map(prod => {
                                                 const cost = calculateCost(prod); const price = toNum(prod.salePrice);
+                                                const margin = price > 0 ? ((price-cost)/price)*100 : 0;
                                                 return (
-                                                    <div key={prod.id} onClick={() => setSelectedProductId(prod.id)} className="white-card p-6 rounded-[2.5rem] hover:border-amber-400 transition-all shadow-sm cursor-pointer group"><div className="flex justify-between items-start mb-6"><p className="font-black text-sm md:text-lg uppercase text-slate-800 laos-italic italic group-hover:text-amber-600 transition-colors">{prod.name || 'İsimsiz'}</p><button onClick={(e) => { e.stopPropagation(); setShowDeleteModal({show:true, col:'products', id:prod.id}); }} className="text-red-400 p-2.5 bg-red-50 rounded-xl transition-all shadow-inner">SİL</button></div><div className="space-y-2 pt-4 border-t border-slate-50 text-[9px] font-black uppercase laos-italic italic"><div className="flex justify-between"><span>MALİYET:</span> <span className="text-red-500 tracking-tighter">{formatCurrency(cost)}</span></div><div className="flex justify-between"><span>SATIŞ:</span> <span className="text-slate-800 tracking-tighter">{formatCurrency(price)}</span></div><div className="flex justify-between"><span>KÂR (%):</span> <span className="text-amber-500 font-black">%{price > 0 ? (((price-cost)/price)*100).toFixed(0) : 0}</span></div></div></div>
+                                                    <div key={prod.id} onClick={() => setSelectedProductId(prod.id)} className="white-card p-6 rounded-[2.5rem] hover:border-amber-400 transition-all shadow-sm cursor-pointer group"><div className="flex justify-between items-start mb-6"><p className="font-black text-sm md:text-lg uppercase text-slate-800 laos-italic italic group-hover:text-amber-600 transition-colors">{prod.name || 'İsimsiz'}</p><button onClick={(e) => { e.stopPropagation(); setShowDeleteModal({show:true, col:'products', id:prod.id}); }} className="text-red-400 p-2.5 bg-red-50 rounded-xl transition-all shadow-inner">SİL</button></div><div className="space-y-2 pt-4 border-t border-slate-50 text-[9px] font-black uppercase laos-italic italic"><div className="flex justify-between"><span>MALİYET:</span> <span className="text-red-500 tracking-tighter">{formatCurrency(cost)}</span></div><div className="flex justify-between"><span>SATIŞ:</span> <span className="text-slate-800 tracking-tighter">{formatCurrency(price)}</span></div><div className="flex justify-between"><span>KÂR:</span> <span className={`${margin >= 20 ? 'text-green-500' : 'text-amber-500'} font-black`}>%{margin.toFixed(0)}</span></div></div></div>
                                                 );
                                             })}
                                         </div>
@@ -425,11 +479,11 @@
                                             const cost = calculateCost(prod);
                                             return (
                                                 <div key={prod.id} className="space-y-8">
-                                                    <div className="premium-dark p-10 md:p-14 text-white shadow-2xl"><input value={prod.name} onChange={(e) => isFirebaseValid && user ? pRef('products').doc(prod.id).update({ name: e.target.value }) : setProducts(ps => ps.map(x => x.id === prod.id ? {...x, name: e.target.value} : x))} className="text-2xl md:text-6xl font-black bg-transparent w-full uppercase text-amber-500 laos-italic italic mb-12 border-none outline-none tracking-tighter p-0 focus:ring-0" /><div className="grid grid-cols-1 md:grid-cols-3 gap-8"><div className="bg-white/5 p-6 rounded-[2rem] border shadow-inner"><p className="text-[9px] font-black text-slate-500 uppercase mb-3 laos-italic italic">SATIŞ FİYATI</p><MoneyInput value={prod.salePrice} onChange={(v) => isFirebaseValid && user ? pRef('products').doc(prod.id).update({ salePrice: v }) : setProducts(ps => ps.map(x => x.id === prod.id ? {...x, salePrice: v} : x))} className="bg-transparent w-full text-center border-none p-0 focus:ring-0 text-xl md:text-4xl font-black laos-italic italic text-slate-100" /></div><div className="bg-white/5 p-6 rounded-[2rem] border text-center shadow-inner"><p className="text-[9px] font-black text-slate-500 uppercase mb-3 laos-italic italic">BİRİM MALİYET</p><p className="text-xl md:text-4xl font-black laos-italic italic text-red-400 tracking-tighter">{formatCurrency(cost)}</p></div><div className="bg-white/5 p-6 rounded-[2rem] border text-center shadow-inner"><p className="text-[9px] font-black text-slate-500 uppercase mb-3 laos-italic italic">KÂR MARJI (%)</p><p className="text-xl md:text-4xl font-black laos-italic italic text-amber-400 tracking-tighter">%{toNum(prod.salePrice) > 0 ? (((toNum(prod.salePrice)-cost)/toNum(prod.salePrice))*100).toFixed(0) : 0}</p></div></div></div>
+                                                    <div className="premium-dark p-10 md:p-14 text-white shadow-2xl"><input value={prod.name} onChange={(e) => updateItem('products', prod.id, { name: e.target.value })} className="text-2xl md:text-6xl font-black bg-transparent w-full uppercase text-amber-500 laos-italic italic mb-12 border-none outline-none tracking-tighter p-0 focus:ring-0" /><div className="grid grid-cols-1 md:grid-cols-3 gap-8"><div className="bg-white/5 p-6 rounded-[2rem] border shadow-inner"><p className="text-[9px] font-black text-slate-500 uppercase mb-3 laos-italic italic">SATIŞ FİYATI</p><MoneyInput value={prod.salePrice} onChange={(v) => updateItem('products', prod.id, { salePrice: v })} className="bg-transparent w-full text-center border-none p-0 focus:ring-0 text-xl md:text-4xl font-black laos-italic italic text-slate-100" /></div><div className="bg-white/5 p-6 rounded-[2rem] border text-center shadow-inner"><p className="text-[9px] font-black text-slate-500 uppercase mb-3 laos-italic italic">BİRİM MALİYET</p><p className="text-xl md:text-4xl font-black laos-italic italic text-red-400 tracking-tighter">{formatCurrency(cost)}</p></div><div className="bg-white/5 p-6 rounded-[2rem] border text-center shadow-inner"><p className="text-[9px] font-black text-slate-500 uppercase mb-3 laos-italic italic">KÂR MARJI (%)</p><p className="text-xl md:text-4xl font-black laos-italic italic text-amber-400 tracking-tighter">%{toNum(prod.salePrice) > 0 ? (((toNum(prod.salePrice)-cost)/toNum(prod.salePrice))*100).toFixed(0) : 0}</p></div></div></div>
                                                     <div className="white-card p-8 md:p-12 shadow-sm space-y-6"><h3 className="text-[10px] font-black uppercase text-slate-800 laos-italic italic border-b pb-6 tracking-widest">REÇETE MALZEMELERİ</h3>
                                                         {(prod.ingredients || []).map((ing, idx) => (
-                                                            <div key={idx} className="flex flex-col sm:flex-row items-center gap-4 bg-slate-50 p-5 rounded-[2rem] border shadow-sm transition-all"><select value={ing.id} onChange={(e) => { const newIngs = [...prod.ingredients]; newIngs[idx].id = e.target.value; isFirebaseValid && user ? pRef('products').doc(prod.id).update({ ingredients: newIngs }) : setProducts(ps => ps.map(x => x.id === prod.id ? {...x, ingredients: newIngs} : x)); }} className="bg-white border px-4 py-3 rounded-2xl text-[11px] font-black uppercase text-slate-800 w-full sm:w-80 laos-italic italic outline-none shadow-sm focus:ring-2 focus:ring-amber-500"><option value="">MALZEME SEÇİN...</option>{inventory.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}</select><div className="flex items-center gap-2"><input type="number" value={ing.amount} onChange={(e) => { const newIngs = [...prod.ingredients]; newIngs[idx].amount = Number(e.target.value); isFirebaseValid && user ? pRef('products').doc(prod.id).update({ ingredients: newIngs }) : setProducts(ps => ps.map(x => x.id === prod.id ? {...x, ingredients: newIngs} : x)); }} className="bg-white rounded-2xl px-5 py-3 w-32 text-right font-black text-sm border laos-italic italic outline-none focus:ring-2 focus:ring-amber-500" /><span className="text-[9px] font-black text-slate-400 uppercase laos-italic italic tracking-tighter">{inventory.find(i => i.id === ing.id)?.unit || 'gr/ml'}</span></div><button onClick={() => { const newIngs = prod.ingredients.filter((_, i) => i !== idx); isFirebaseValid && user ? pRef('products').doc(prod.id).update({ ingredients: newIngs }) : setProducts(ps => ps.map(x => x.id === prod.id ? {...x, ingredients: newIngs} : x)); }} className="text-red-400 p-3 bg-white rounded-2xl shadow-sm hover:bg-red-500 hover:text-white transition-all">✖</button></div>
-                                                        ))}<button onClick={() => { const newIngs = [...(prod.ingredients || []), { id: '', amount: 0 }]; isFirebaseValid && user ? pRef('products').doc(prod.id).update({ ingredients: newIngs }) : setProducts(ps => ps.map(x => x.id === prod.id ? {...x, ingredients: newIngs} : x)); }} className="w-full py-6 border-2 border-dashed border-slate-200 rounded-[2rem] text-[10px] font-black uppercase text-slate-400 hover:border-amber-400 hover:text-amber-500 transition-all laos-italic italic bg-slate-50/50 shadow-inner">➕ YENİ SATIR EKLE</button>
+                                                            <div key={idx} className="flex flex-col sm:flex-row items-center gap-4 bg-slate-50 p-5 rounded-[2rem] border shadow-sm transition-all"><select value={ing.id} onChange={(e) => { const newIngs = [...prod.ingredients]; newIngs[idx].id = e.target.value; updateItem('products', prod.id, { ingredients: newIngs }); }} className="bg-white border px-4 py-3 rounded-2xl text-[11px] font-black uppercase text-slate-800 w-full sm:w-80 laos-italic italic outline-none shadow-sm focus:ring-2 focus:ring-amber-500"><option value="">MALZEME SEÇİN...</option>{inventory.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}</select><div className="flex items-center gap-2"><input type="number" value={ing.amount} onChange={(e) => { const newIngs = [...prod.ingredients]; newIngs[idx].amount = Number(e.target.value); updateItem('products', prod.id, { ingredients: newIngs }); }} className="bg-white rounded-2xl px-5 py-3 w-32 text-right font-black text-sm border laos-italic italic outline-none focus:ring-2 focus:ring-amber-500" /><span className="text-[9px] font-black text-slate-400 uppercase laos-italic italic tracking-tighter">{inventory.find(i => i.id === ing.id)?.unit || 'gr/ml'}</span></div><button onClick={() => { const newIngs = prod.ingredients.filter((_, i) => i !== idx); updateItem('products', prod.id, { ingredients: newIngs }); }} className="text-red-400 p-3 bg-white rounded-2xl shadow-sm hover:bg-red-500 hover:text-white transition-all">✖</button></div>
+                                                        ))}<button onClick={() => { const newIngs = [...(prod.ingredients || []), { id: '', amount: 0 }]; updateItem('products', prod.id, { ingredients: newIngs }); }} className="w-full py-6 border-2 border-dashed border-slate-200 rounded-[2rem] text-[10px] font-black uppercase text-slate-400 hover:border-amber-400 hover:text-amber-500 transition-all laos-italic italic bg-slate-50/50 shadow-inner">➕ YENİ SATIR EKLE</button>
                                                     </div>
                                                 </div>
                                             );
@@ -448,7 +502,7 @@
                                     <div className="premium-dark p-8 text-white shadow-2xl border-b-8 border-amber-500"><p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-3 laos-italic italic">NET KÂR</p><p className="text-sm md:text-3xl font-black tracking-tighter laos-italic italic text-amber-500">{formatCurrency(netCash - toNum(settings.initialBalance))}</p></div>
                                     <div className="white-card p-8 border-l-[10px] border-blue-500 shadow-sm"><p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-3 laos-italic italic">BORÇ/KREDİ</p><p className="text-sm md:text-3xl font-black text-blue-600 tracking-tighter laos-italic italic">{formatCurrency(totals.loan)}</p></div>
                                 </div>
-                                <div className="bg-slate-900 p-10 rounded-[3rem] text-white shadow-2xl flex flex-col md:flex-row gap-12 items-center"><div className="flex-1 space-y-8"><h3 className="text-xs md:text-2xl font-black text-amber-500 uppercase laos-italic italic tracking-widest">YÖNETİCİ ÖZETİ</h3><p className="text-xs md:text-lg font-bold laos-italic italic text-slate-200 leading-relaxed">İşletmenizin şu anki net nakit gücü {formatCurrency(netCash)} seviyesindedir. Toplam cironuzun {formatCurrency(totals.comm)} kadarı banka komisyonlarına gitmektedir.</p></div><div className="w-48 h-48 rounded-full border-8 border-amber-500 flex flex-col items-center justify-center italic font-black text-amber-500 uppercase text-xs tracking-widest text-center">LAOS<br/>STRATEJİ<br/>EKİBİ</div></div>
+                                <div className="bg-slate-900 p-10 rounded-[3rem] text-white shadow-2xl flex flex-col md:flex-row gap-12 items-center"><div className="flex-1 space-y-8"><h3 className="text-xs md:text-2xl font-black text-amber-500 uppercase laos-italic italic tracking-widest">YÖNETİCİ ÖZETİ</h3><p className="text-xs md:text-lg font-bold laos-italic italic text-slate-200 leading-relaxed">İşletmenizin şu anki net nakit gücü {formatCurrency(netCash)} seviyesindedir. Toplam cironuzun {formatCurrency(totals.comm)} kadarı banka komisyonlarına gitmektedir.</p></div><div className="w-48 h-48 rounded-full border-8 border-amber-500 flex flex-col items-center justify-center italic font-black text-amber-500 uppercase text-xs tracking-widest text-center shadow-lg">LAOS<br/>STRATEJİ<br/>EKİBİ</div></div>
                             </div>
                         )}
                     </main>
@@ -457,7 +511,7 @@
                     <div className="fixed top-4 right-4 z-[1001] md:top-8 md:right-8">
                         <div className="px-5 py-2.5 rounded-full bg-slate-950/95 backdrop-blur-2xl shadow-2xl border border-white/10 flex items-center gap-3 text-white">
                             <div className={`w-2.5 h-2.5 rounded-full shadow-[0_0_15px] animate-pulse ${isFirebaseValid ? 'bg-amber-500 shadow-amber-500' : 'bg-red-500 shadow-red-500'}`}></div>
-                            <span className="text-[9px] font-black text-amber-500 uppercase tracking-[0.3em] laos-italic italic">{isFirebaseValid && user ? 'LAOS CONNECTED' : 'DEMO MODE'}</span>
+                            <span className="text-[9px] font-black text-amber-500 uppercase tracking-[0.3em] laos-italic italic">{(isFirebaseValid && user) ? 'LAOS CONNECTED' : 'DEMO MODE'}</span>
                         </div>
                     </div>
                 </div>
