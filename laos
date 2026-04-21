@@ -14,7 +14,6 @@ const appId = typeof __app_id !== 'undefined' ? __app_id : 'cafe-pro-v1';
 const toNum = (v) => {
   if (v === null || v === undefined || v === "") return 0;
   if (typeof v === 'number') return v;
-  // Binlik ayracı olan noktayı ve varsa virgülü temizler
   const clean = String(v).replace(/\./g, '').replace(/,/g, '');
   return parseInt(clean, 10) || 0;
 };
@@ -94,11 +93,13 @@ const MethodBadge = ({ method }) => {
 export default function App() {
   const [user, setUser] = useState(null);
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [recipeSubTab, setRecipeSubTab] = useState('inventory'); // inventory or products
   const [loading, setLoading] = useState(true);
   const [reportRange, setReportRange] = useState('monthly');
   const [customStartDate, setCustomStartDate] = useState(new Date().toISOString().split('T')[0]);
   const [customEndDate, setCustomEndDate] = useState(new Date().toISOString().split('T')[0]);
   const [selectedPersonnelId, setSelectedPersonnelId] = useState(null);
+  const [selectedProductId, setSelectedProductId] = useState(null);
   const [showDeleteModal, setShowDeleteModal] = useState({ show: false, col: '', id: '' });
 
   const [settings, setSettings] = useState({ initialBalance: 0, defaultCommission: 3.5, defaultValor: 30 });
@@ -106,8 +107,10 @@ export default function App() {
   const [scheduledPayments, setScheduledPayments] = useState([]);
   const [personnel, setPersonnel] = useState([]);
   const [personnelPayments, setPersonnelPayments] = useState([]);
+  const [inventory, setInventory] = useState([]);
+  const [products, setProducts] = useState([]);
 
-  // Kimlik Doğrulama ve Senkronizasyon (Kural 1, 2, 3)
+  // Kimlik Doğrulama
   useEffect(() => {
     const initAuth = async () => {
       if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -121,9 +124,9 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // Senkronizasyon
   useEffect(() => {
     if (!user) return;
-
     const publicCol = (name) => collection(db, 'artifacts', appId, 'public', 'data', name);
 
     const unsubSettings = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'config', 'app_settings'), (d) => d.exists() && setSettings(d.data()));
@@ -131,12 +134,14 @@ export default function App() {
     const unsubSched = onSnapshot(query(publicCol('scheduledPayments')), (s) => setScheduledPayments(s.docs.map(d => ({id: d.id, ...d.data()}))));
     const unsubPers = onSnapshot(query(publicCol('personnel')), (s) => setPersonnel(s.docs.map(d => ({id: d.id, ...d.data()}))));
     const unsubPersPay = onSnapshot(query(publicCol('personnelPayments')), (s) => setPersonnelPayments(s.docs.map(d => ({id: d.id, ...d.data()}))));
+    const unsubInv = onSnapshot(query(publicCol('inventory')), (s) => setInventory(s.docs.map(d => ({id: d.id, ...d.data()}))));
+    const unsubProducts = onSnapshot(query(publicCol('products')), (s) => setProducts(s.docs.map(d => ({id: d.id, ...d.data()}))));
 
     setLoading(false);
-    return () => { unsubSettings(); unsubLogs(); unsubSched(); unsubPers(); unsubPersPay(); };
+    return () => { unsubSettings(); unsubLogs(); unsubSched(); unsubPers(); unsubPersPay(); unsubInv(); unsubProducts(); };
   }, [user]);
 
-  // Canlı Hesaplama Mantığı (Veri silindiğinde otomatik güncellenir)
+  // Hesaplamalar
   const stats = useMemo(() => {
     const logsTotals = dailyLogs.reduce((acc, log) => {
       const cash = toNum(log.cash);
@@ -149,7 +154,6 @@ export default function App() {
     const billsPaid = scheduledPayments.filter(p => p.status === 'paid').reduce((s, p) => s + toNum(p.amount), 0);
     const staffPaid = personnelPayments.reduce((s, p) => s + toNum(p.amount), 0);
     
-    // NAKİT GÜCÜ: Gerçek girenler - Gerçek çıkanlar
     const netCash = toNum(settings.initialBalance) + logsTotals.cash + logsTotals.card + logsTotals.loan - (staffPaid + billsPaid + logsTotals.comm);
     const posPending = logsTotals.card - logsTotals.comm;
     
@@ -219,6 +223,18 @@ export default function App() {
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'config', 'app_settings'), newVal, { merge: true });
   };
 
+  // Reçete Maliyet Hesaplama
+  const calculateProductCost = (prod) => {
+    if (!prod.ingredients || !Array.isArray(prod.ingredients)) return 0;
+    return prod.ingredients.reduce((total, ing) => {
+      const invItem = inventory.find(i => i.id === ing.id);
+      if (!invItem) return total;
+      // Eğer birimi kg/L ise 1000'e bölerek gram/ml maliyeti buluruz
+      const unitFactor = (invItem.unit === 'kg' || invItem.unit === 'L') ? 1000 : 1;
+      return total + (toNum(invItem.price) / unitFactor) * toNum(ing.amount);
+    }, 0);
+  };
+
   if (loading) return <div className="h-screen bg-slate-950 flex items-center justify-center text-amber-500 font-black animate-pulse uppercase text-[10px] tracking-widest">Laos Finans Hazırlanıyor...</div>;
 
   return (
@@ -250,9 +266,10 @@ export default function App() {
           {id:'pos', icon:'💳', l:'POS'},
           {id:'personnel', icon:'👥', l:'Ekip'},
           {id:'payments', icon:'🧾', l:'Ödemeler'},
+          {id:'recipes', icon:'📋', l:'Reçete'},
           {id:'reports', icon:'📈', l:'Analiz'}
         ].map(t => (
-          <button key={t.id} onClick={() => {setActiveTab(t.id); setSelectedPersonnelId(null);}} 
+          <button key={t.id} onClick={() => {setActiveTab(t.id); setSelectedPersonnelId(null); setSelectedProductId(null);}} 
             className={`flex flex-col md:flex-row items-center gap-1 md:gap-3 p-2 rounded-xl transition-all flex-1 md:flex-none ${activeTab === t.id ? 'bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/20' : 'text-slate-500 hover:text-slate-200'}`}>
             <span className="text-base">{t.icon}</span> 
             <span className="text-[7px] lg:text-[11px] font-black uppercase tracking-tight text-center lg:text-left">{t.l}</span>
@@ -445,6 +462,156 @@ export default function App() {
                     </div>
                   );
                 })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* REÇETE & ÜRÜNLER SEKİMESİ (YENİ) */}
+        {activeTab === 'recipes' && (
+          <div className="max-w-5xl mx-auto space-y-6 animate-up pb-10">
+            <header className="flex flex-col md:flex-row justify-between items-center gap-4 bg-slate-950 p-4 rounded-2xl border-b-4 border-amber-500">
+              <h2 className="text-white font-black text-[10px] md:text-sm uppercase italic tracking-widest">Ürün & Reçete Yönetimi</h2>
+              <div className="flex bg-white/5 p-1 rounded-lg">
+                <button onClick={() => {setRecipeSubTab('inventory'); setSelectedProductId(null);}} className={`px-4 py-1.5 rounded-md text-[8px] font-black uppercase transition-all ${recipeSubTab === 'inventory' ? 'bg-amber-500 text-slate-950' : 'text-slate-400'}`}>Malzeme Deposu</button>
+                <button onClick={() => setRecipeSubTab('products')} className={`px-4 py-1.5 rounded-md text-[8px] font-black uppercase transition-all ${recipeSubTab === 'products' ? 'bg-amber-500 text-slate-950' : 'text-slate-400'}`}>Ürün Reçeteleri</button>
+              </div>
+            </header>
+
+            {/* MALZEME DEPOSU BÖLÜMÜ */}
+            {recipeSubTab === 'inventory' && (
+              <div className="space-y-4">
+                <div className="flex justify-end px-2">
+                  <button onClick={() => addDoc(publicRef('inventory'), { name: 'Yeni Malzeme', price: 0, unit: 'kg' })} className="bg-amber-500 text-slate-950 px-4 py-2 rounded-xl font-black text-[8px] uppercase italic transition-all active:scale-95">MALZEME EKLE</button>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {inventory.map(item => (
+                    <div key={item.id} className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-3">
+                      <div className="flex justify-between items-center">
+                        <input value={item.name} onChange={(e) => updateDoc(publicRef('inventory', item.id), { name: e.target.value })} className="font-black text-xs uppercase bg-transparent border-none p-0 focus:ring-0 text-slate-800" />
+                        <button onClick={() => setShowDeleteModal({show:true, col:'inventory', id:item.id})} className="text-red-200">🗑️</button>
+                      </div>
+                      <div className="flex items-center gap-2 bg-slate-50 p-2 rounded-xl">
+                        <p className="text-[8px] font-black text-slate-400 uppercase italic">Alış Fiyatı</p>
+                        <div className="flex-1 flex justify-end items-center gap-1">
+                          <MoneyInput value={item.price} onChange={(v) => updateDoc(publicRef('inventory', item.id), { price: v })} className="bg-transparent text-right font-black text-xs border-none p-0 focus:ring-0 w-20" />
+                          <span className="text-[9px] font-bold text-slate-400">₺ / </span>
+                          <select value={item.unit} onChange={(e) => updateDoc(publicRef('inventory', item.id), { unit: e.target.value })} className="bg-transparent border-none p-0 text-[9px] font-bold text-slate-500 uppercase focus:ring-0 cursor-pointer">
+                            <option value="kg">kg</option>
+                            <option value="L">L</option>
+                            <option value="Adet">Adet</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ÜRÜN REÇETELERİ BÖLÜMÜ */}
+            {recipeSubTab === 'products' && (
+              <div className="space-y-4">
+                {!selectedProductId ? (
+                  <>
+                    <div className="flex justify-end px-2">
+                      <button onClick={() => addDoc(publicRef('products'), { name: 'Yeni Ürün', salePrice: 0, ingredients: [] })} className="bg-amber-500 text-slate-950 px-4 py-2 rounded-xl font-black text-[8px] uppercase italic transition-all active:scale-95">ÜRÜN EKLE</button>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {products.map(prod => {
+                        const cost = calculateProductCost(prod);
+                        const price = toNum(prod.salePrice);
+                        const profit = price - cost;
+                        const margin = price > 0 ? (profit / price) * 100 : 0;
+                        return (
+                          <div key={prod.id} onClick={() => setSelectedProductId(prod.id)} className="bg-white p-4 rounded-2xl border border-transparent hover:border-amber-400 transition-all shadow-sm cursor-pointer min-h-[120px] flex flex-col justify-between">
+                            <div className="flex justify-between items-start">
+                              <p className="font-black text-xs uppercase text-slate-800">{prod.name}</p>
+                              <button onClick={(e) => { e.stopPropagation(); setShowDeleteModal({show:true, col:'products', id:prod.id}); }} className="text-red-200">🗑️</button>
+                            </div>
+                            <div className="space-y-1">
+                              <div className="flex justify-between text-[8px] font-black text-slate-400 uppercase italic"><span>Maliyet:</span> <span className="text-red-500">{formatCurrency(cost)}</span></div>
+                              <div className="flex justify-between text-[8px] font-black text-slate-400 uppercase italic"><span>Satış:</span> <span className="text-slate-800">{formatCurrency(price)}</span></div>
+                              <div className="flex justify-between text-[8px] font-black text-slate-400 uppercase italic"><span>Kâr (%):</span> <span className={margin >= 50 ? 'text-emerald-500' : 'text-amber-500'}>%{margin.toFixed(0)}</span></div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                ) : (
+                  <div className="animate-up space-y-4">
+                    <button onClick={() => setSelectedProductId(null)} className="font-black text-[8px] uppercase text-slate-400 bg-white px-3 py-1.5 rounded-lg border border-slate-100 flex items-center gap-1.5 hover:text-slate-900 italic">🔙 Geri Dön</button>
+                    {products.filter(p => p.id === selectedProductId).map(prod => {
+                      const cost = calculateProductCost(prod);
+                      const price = toNum(prod.salePrice);
+                      const profit = price - cost;
+                      const margin = price > 0 ? (profit / price) * 100 : 0;
+                      return (
+                        <div key={prod.id} className="space-y-4">
+                          <div className="bg-slate-950 p-6 rounded-3xl text-white shadow-xl border-b-4 border-amber-500">
+                            <input value={prod.name} onChange={(e) => updateDoc(publicRef('products', prod.id), { name: e.target.value })} className="text-xl md:text-3xl font-black bg-transparent w-full uppercase text-amber-500 italic mb-4 focus:ring-0 border-none p-0" />
+                            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                              <div className="bg-white/5 p-3 rounded-xl border border-white/5">
+                                <p className="text-[7px] font-bold text-slate-500 uppercase mb-1 italic">SATIŞ FİYATI</p>
+                                <div className="flex items-center gap-1 font-black text-xs md:text-xl text-slate-100 italic">
+                                    <MoneyInput value={prod.salePrice} onChange={(val) => updateDoc(publicRef('products', prod.id), { salePrice: val })} className="bg-transparent w-full border-none focus:ring-0" />
+                                </div>
+                              </div>
+                              <div className="bg-white/5 p-3 rounded-xl border border-white/5">
+                                <p className="text-[7px] font-bold text-slate-500 uppercase mb-1 italic">BİRİM MALİYET</p>
+                                <p className="text-xs md:text-xl font-black italic text-red-400">{formatCurrency(cost)}</p>
+                              </div>
+                              <div className="bg-white/5 p-3 rounded-xl border border-white/5">
+                                <p className="text-[7px] font-bold text-slate-500 uppercase mb-1 italic">BRÜT KÂR MARJI</p>
+                                <p className={`text-xs md:text-xl font-black italic ${margin >= 50 ? 'text-emerald-400' : 'text-amber-400'}`}>%{margin.toFixed(0)}</p>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="bg-white rounded-2xl p-5 shadow-sm space-y-4">
+                            <h3 className="text-[9px] font-black uppercase text-slate-800 italic border-b pb-2">Reçete Malzemeleri</h3>
+                            <div className="space-y-2">
+                              {(prod.ingredients || []).map((ing, idx) => {
+                                const invItem = inventory.find(i => i.id === ing.id);
+                                return (
+                                  <div key={idx} className="flex items-center gap-2 bg-slate-50 p-2 rounded-xl border border-slate-100">
+                                    <select value={ing.id} onChange={(e) => {
+                                      const newIngs = [...prod.ingredients];
+                                      newIngs[idx].id = e.target.value;
+                                      updateDoc(publicRef('products', prod.id), { ingredients: newIngs });
+                                    }} className="bg-transparent border-none p-0 text-[10px] font-black uppercase text-slate-800 focus:ring-0 w-32 md:w-auto">
+                                      <option value="">Seçiniz...</option>
+                                      {inventory.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+                                    </select>
+                                    <div className="flex-1 flex items-center justify-end gap-1">
+                                      <input type="number" value={ing.amount} onChange={(e) => {
+                                        const newIngs = [...prod.ingredients];
+                                        newIngs[idx].amount = Number(e.target.value);
+                                        updateDoc(publicRef('products', prod.id), { ingredients: newIngs });
+                                      }} className="bg-white rounded px-2 py-0.5 w-16 text-right font-black text-[10px] border border-slate-200 focus:ring-1 focus:ring-amber-500" />
+                                      <span className="text-[8px] font-bold text-slate-400 uppercase italic">
+                                        {invItem?.unit === 'kg' ? 'gr' : invItem?.unit === 'L' ? 'ml' : 'Adet'}
+                                      </span>
+                                    </div>
+                                    <button onClick={() => {
+                                      const newIngs = prod.ingredients.filter((_, i) => i !== idx);
+                                      updateDoc(publicRef('products', prod.id), { ingredients: newIngs });
+                                    }} className="text-red-300 ml-2">✖</button>
+                                  </div>
+                                );
+                              })}
+                              <button onClick={() => {
+                                const newIngs = [...(prod.ingredients || []), { id: '', amount: 0 }];
+                                updateDoc(publicRef('products', prod.id), { ingredients: newIngs });
+                              }} className="w-full py-2 border-2 border-dashed border-slate-200 rounded-xl text-[8px] font-black uppercase text-slate-400 hover:border-amber-400 hover:text-amber-500 transition-all">MALZEME EKLE</button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </div>
