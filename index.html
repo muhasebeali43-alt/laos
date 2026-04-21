@@ -88,23 +88,6 @@
             z-index: 1000;
         }
 
-        .payment-method-badge {
-            font-size: 8px;
-            font-weight: 900;
-            padding: 4px 8px;
-            border-radius: 8px;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-
-        .method-dropdown {
-            appearance: none;
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-            background-repeat: no-repeat;
-            background-position: right 0.75rem center;
-            padding-right: 2.2rem !important;
-        }
-
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 
@@ -165,7 +148,7 @@
             return new Intl.NumberFormat('tr-TR').format(val);
         };
 
-        const formatCurrency = (val) => new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY' }).format(val || 0);
+        const formatCurrency = (val) => new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY', minimumFractionDigits: 0 }).format(val || 0);
 
         const dbToDisplay = (isoDate) => {
             if (!isoDate) return "";
@@ -222,32 +205,16 @@
             );
         };
 
-        const MethodSelector = ({ value, onChange, className = "" }) => {
-            return (
-                <select value={value || 'nakit'} onChange={(e) => onChange(e.target.value)}
-                        className={`method-dropdown bg-white border border-slate-200 shadow-sm rounded-xl px-4 py-2 text-[10px] font-black uppercase tracking-widest text-slate-700 focus:ring-2 focus:ring-amber-500 cursor-pointer ${className}`}>
-                    {ALL_PAYMENT_METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
-                </select>
-            );
-        };
-
-        const MethodBadge = ({ method }) => {
-            const m = ALL_PAYMENT_METHODS.find(x => x.id === method) || ALL_PAYMENT_METHODS[0];
-            return (
-                <span className={`payment-method-badge flex items-center gap-2 ${m.color}`}>
-                    <Icon name={m.icon} size={10} /> {m.label}
-                </span>
-            );
-        };
-
         const App = () => {
             const [user, setUser] = useState(null);
             const [activeTab, setActiveTab] = useState('dashboard');
+            const [recipeSubTab, setRecipeSubTab] = useState('products'); 
             const [loading, setLoading] = useState(true);
             const [reportRange, setReportRange] = useState('monthly');
             const [customStartDate, setCustomStartDate] = useState(new Date().toISOString().split('T')[0]);
             const [customEndDate, setCustomEndDate] = useState(new Date().toISOString().split('T')[0]);
             const [selectedPersonnelId, setSelectedPersonnelId] = useState(null);
+            const [selectedProductId, setSelectedProductId] = useState(null);
             const [showDeleteModal, setShowDeleteModal] = useState({ show: false, col: '', id: '' });
 
             const [settings, setSettings] = useState({ initialBalance: 0, defaultCommission: 3.5, defaultValor: 30 });
@@ -255,6 +222,8 @@
             const [scheduledPayments, setScheduledPayments] = useState([]);
             const [personnel, setPersonnel] = useState([]);
             const [personnelPayments, setPersonnelPayments] = useState([]);
+            const [materials, setMaterials] = useState([]);
+            const [products, setProducts] = useState([]);
 
             useEffect(() => {
                 const unsubscribeAuth = auth.onAuthStateChanged((u) => {
@@ -266,6 +235,8 @@
                         baseRef.collection('scheduledPayments').onSnapshot(s => setScheduledPayments(s.docs.map(d => ({id: d.id, ...d.data()}))));
                         baseRef.collection('personnel').onSnapshot(s => setPersonnel(s.docs.map(d => ({id: d.id, ...d.data()}))));
                         baseRef.collection('personnelPayments').onSnapshot(s => setPersonnelPayments(s.docs.map(d => ({id: d.id, ...d.data()}))));
+                        baseRef.collection('materials').onSnapshot(s => setMaterials(s.docs.map(d => ({id: d.id, ...d.data()}))));
+                        baseRef.collection('products').onSnapshot(s => setProducts(s.docs.map(d => ({id: d.id, ...d.data()}))));
                         setLoading(false);
                     } else {
                         auth.signInAnonymously().catch(console.error);
@@ -286,8 +257,6 @@
                 }, { loan: 0, cash: 0, card: 0, comm: 0 });
 
                 const billsPaid = scheduledPayments.filter(p => p.status === 'paid').reduce((s, p) => s + Number(p.amount), 0);
-                
-                // --- KRİTİK BÜG DÜZELTMESİ: Silinen personelin ödemelerini hesaba katma ---
                 const validPersonnelIds = new Set(personnel.map(p => p.id));
                 const staffPaidTotal = personnelPayments
                     .filter(pay => validPersonnelIds.has(pay.personnelId))
@@ -296,6 +265,7 @@
                 const netCash = Number(settings.initialBalance || 0) + logsTotals.cash + logsTotals.card + logsTotals.loan - (staffPaidTotal + billsPaid + logsTotals.comm);
                 const posPending = logsTotals.card - logsTotals.comm;
                 
+                // Yaklaşan ödemeler hesabı süzgeci
                 const upcoming = scheduledPayments
                     .filter(p => p.status !== 'paid')
                     .sort((a, b) => new Date(a.date) - new Date(b.date))
@@ -321,41 +291,15 @@
                 }).sort((a, b) => new Date(a.date) - new Date(b.date));
             }, [dailyLogs, settings]);
 
-            const reportAnalysis = useMemo(() => {
-                const now = new Date();
-                const start = new Date(customStartDate);
-                const end = new Date(customEndDate);
-                start.setHours(0,0,0,0); end.setHours(23,59,59,999);
-
-                const filterFn = (dStr) => {
-                    if (!dStr) return false;
-                    const d = new Date(dStr);
-                    if (reportRange === 'daily') return d.toDateString() === now.toDateString();
-                    if (reportRange === 'monthly') return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-                    if (reportRange === 'custom') return d >= start && d <= end;
-                    return true;
-                };
-
-                const fLogs = dailyLogs.filter(l => filterFn(l.date));
-                const validPersonnelIds = new Set(personnel.map(p => p.id));
-                const fPersPays = personnelPayments.filter(p => validPersonnelIds.has(p.personnelId) && filterFn(p.date));
-                const fSchedPays = scheduledPayments.filter(p => p.status === 'paid' && filterFn(p.date));
-
-                const incomeSum = fLogs.reduce((a, l) => ({ 
-                    cash: a.cash + Number(l.cash || 0), card: a.card + Number(l.card || 0), loan: a.loan + Number(l.dailyLoan || 0)
-                }), {cash:0, card:0, loan:0});
-                
-                const totalIn = incomeSum.cash + incomeSum.card + incomeSum.loan;
-                const staffEx = fPersPays.reduce((s, p) => s + Number(p.amount || 0), 0);
-                const posEx = fLogs.reduce((s, l) => s + (Number(l.card || 0) * (settings.defaultCommission || 3.5) / 100), 0);
-                const othersEx = fSchedPays.reduce((s, p) => s + Number(p.amount || 0), 0);
-                
-                const totalEx = staffEx + posEx + othersEx;
-                const profit = totalIn - totalEx;
-                const margin = totalIn > 0 ? (profit / totalIn) * 100 : 0;
-
-                return { totalIn, totalEx, profit, margin, staffEx, posEx, othersEx };
-            }, [dailyLogs, personnelPayments, scheduledPayments, personnel, reportRange, customStartDate, customEndDate, settings]);
+            const calculateProductCost = (product) => {
+                if (!product.ingredients || product.ingredients.length === 0) return 0;
+                return product.ingredients.reduce((total, ing) => {
+                    const mat = materials.find(m => m.id === ing.materialId);
+                    if (!mat) return total;
+                    const unitPrice = Number(mat.price || 0) / 1000;
+                    return total + (unitPrice * Number(ing.quantity || 0));
+                }, 0);
+            };
 
             const getCol = (c) => db.collection('artifacts').doc(appId).collection('public').doc('data').collection(c);
             const triggerDelete = (col, id) => setShowDeleteModal({ show: true, col, id });
@@ -397,11 +341,12 @@
                             {id:'dashboard', icon:'layout-dashboard', l:'Özet'},
                             {id:'daily', icon:'calendar-days', l:'Günlük'},
                             {id:'pos', icon:'credit-card', l:'POS'},
+                            {id:'recipe', icon:'chef-hat', l:'Reçeteler'},
                             {id:'personnel', icon:'users', l:'Personel'},
                             {id:'payments', icon:'receipt', l:'Ödemeler'},
                             {id:'reports', icon:'bar-chart-3', l:'Analiz'}
                         ].map(t => (
-                            <button key={t.id} onClick={() => {setActiveTab(t.id); setSelectedPersonnelId(null);}} 
+                            <button key={t.id} onClick={() => {setActiveTab(t.id); setSelectedPersonnelId(null); setSelectedProductId(null);}} 
                                 className={`flex-1 md:flex-none flex flex-col md:flex-row items-center gap-1 md:gap-3 p-2 md:p-3 rounded-xl md:rounded-2xl transition-all ${activeTab === t.id ? 'nav-active' : 'text-slate-500 hover:text-slate-300'}`}>
                                 <Icon name={t.icon} size={activeTab === t.id ? 20 : 18} /> 
                                 <span className="text-[8px] md:text-xs font-black uppercase tracking-widest text-center">{t.l}</span>
@@ -409,7 +354,7 @@
                         ))}
                     </nav>
 
-                    <main className="flex-1 p-4 md:p-12 overflow-y-auto">
+                    <main className="flex-1 p-4 md:p-12 overflow-y-auto no-scrollbar">
                         
                         {/* ÖZET PANELİ */}
                         {activeTab === 'dashboard' && (
@@ -417,26 +362,29 @@
                                 <header className="flex items-center gap-3 md:gap-4"><div className="w-1.5 h-8 md:h-10 gold-bg rounded-full"></div><h1 className="text-2xl md:text-5xl font-black text-slate-900 tracking-tighter italic uppercase font-bold">Finansal Durum</h1></header>
                                 
                                 <div className="laos-hero-card p-6 md:p-14 text-white shadow-2xl relative overflow-hidden group">
-                                    <p className="text-[8px] md:text-[12px] font-bold text-slate-400 uppercase mb-3 tracking-[0.4em] flex items-center gap-2"><Icon name="banknote" size={14} className="gold-text" /> Nakit Gücü</p>
-                                    <h2 className="text-3xl md:text-8xl font-black gold-text tracking-tighter mb-8 md:mb-16 italic break-all">{formatCurrency(globalStats.netCash)}</h2>
-                                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-12 border-t border-white/5 pt-8 md:pt-10">
+                                    <p className="text-[8px] md:text-[12px] font-bold text-slate-400 uppercase mb-3 tracking-[0.4em] flex items-center gap-2 italic">NET NAKİT GÜCÜ</p>
+                                    <h2 className="text-3xl md:text-8xl font-black gold-text tracking-tighter mb-8 md:mb-16 italic break-all font-bold">{formatCurrency(globalStats.netCash)}</h2>
+                                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-12 border-t border-white/5 pt-8 md:pt-10 font-bold">
                                         <div><p className="text-[8px] md:text-[11px] text-slate-500 font-bold uppercase mb-1 tracking-widest italic">Aylık Ciro</p><p className="font-bold text-sm md:text-2xl text-slate-200">{formatCurrency(globalStats.cash + globalStats.card)}</p></div>
-                                        <div><p className="text-[8px] md:text-[11px] text-slate-500 font-bold uppercase mb-1 tracking-widest italic font-bold">Gider</p><p className="font-bold text-sm md:text-2xl text-red-400">{formatCurrency(globalStats.staffPaidTotal + globalStats.billsPaid + globalStats.comm)}</p></div>
+                                        <div><p className="text-[8px] md:text-[11px] text-slate-500 font-bold uppercase mb-1 tracking-widest italic">Gider</p><p className="font-bold text-sm md:text-2xl text-red-400">{formatCurrency(globalStats.staffPaidTotal + globalStats.billsPaid + globalStats.comm)}</p></div>
                                         <div><p className="text-[8px] md:text-[11px] text-slate-500 font-bold uppercase mb-1 tracking-widest italic">Kredi</p><p className="font-bold text-sm md:text-2xl text-blue-400">{formatCurrency(globalStats.loan)}</p></div>
-                                        <div><p className="text-[8px] md:text-[11px] text-slate-500 font-bold uppercase mb-1 tracking-widest italic font-bold">Kasa</p><p className="font-bold text-sm md:text-2xl text-slate-500">{formatCurrency(settings.initialBalance)}</p></div>
+                                        <div><p className="text-[8px] md:text-[11px] text-slate-500 font-bold uppercase mb-1 tracking-widest italic">Kasa</p><p className="font-bold text-sm md:text-2xl text-slate-500">{formatCurrency(settings.initialBalance)}</p></div>
                                     </div>
                                 </div>
 
+                                {/* YAKLAŞAN ÖDEMELER (GERİ EKLENDİ) */}
                                 <div className="white-card p-6 md:p-10 border-l-8 border-red-500 shadow-xl space-y-6">
                                     <div className="flex justify-between items-center border-b pb-4">
-                                        <h3 className="text-lg md:text-2xl font-black text-slate-800 uppercase italic tracking-tighter flex items-center gap-3 font-bold"><Icon name="bell" className="text-red-500" /> Yaklaşan Ödemeler</h3>
+                                        <h3 className="text-lg md:text-2xl font-black text-slate-800 uppercase italic tracking-tighter flex items-center gap-3 font-bold">
+                                            <Icon name="bell" className="text-red-500" /> Yaklaşan Ödemeler
+                                        </h3>
                                     </div>
                                     <div className="space-y-4">
-                                        {globalStats.upcoming.length > 0 ? globalStats.upcoming.map(p => (
-                                            <div key={p.id} className="flex justify-between items-center bg-slate-50 p-4 rounded-[1.5rem] border transition-all">
+                                        {globalStats.upcoming && globalStats.upcoming.length > 0 ? globalStats.upcoming.map(p => (
+                                            <div key={p.id} className="flex justify-between items-center bg-slate-50 p-4 md:p-6 rounded-[1.5rem] border transition-all hover:bg-slate-100">
                                                 <div className="flex items-center gap-4">
                                                     <div className="bg-white p-2 rounded-xl text-[10px] font-black text-red-600 border border-red-100 italic tracking-tighter">{dbToDisplay(p.date)}</div>
-                                                    <div><p className="font-black text-slate-800 uppercase text-xs md:text-base leading-none mb-1 font-bold">{p.label}</p><MethodBadge method={p.method} /></div>
+                                                    <div><p className="font-black text-slate-800 uppercase text-xs md:text-base leading-none mb-1 font-bold">{p.label}</p></div>
                                                 </div>
                                                 <p className="text-lg md:text-2xl font-black text-red-600 tracking-tighter font-bold">{formatCurrency(p.amount)}</p>
                                             </div>
@@ -446,88 +394,140 @@
                             </div>
                         )}
 
-                        {/* POS ANALİZİ (GERİ GELDİ) */}
-                        {activeTab === 'pos' && (
-                            <div className="max-w-4xl mx-auto space-y-6 md:space-y-10 animate-up">
-                                <header className="flex flex-col md:flex-row justify-between items-start md:items-center mb-10 gap-6">
-                                    <h2 className="text-2xl md:text-4xl font-black text-slate-900 uppercase italic tracking-tighter laos-gradient-text font-bold">POS Alacak Analizi</h2>
-                                    <div className="laos-hero-card text-white px-8 py-6 shadow-xl border-b-8 border-amber-500">
-                                        <p className="text-[10px] font-bold text-slate-400 uppercase mb-1 tracking-widest italic font-bold">Net Bekleyen POS</p>
-                                        <p className="text-2xl md:text-4xl font-black gold-text break-all font-bold">{formatCurrency(globalStats.posPending)}</p>
-                                    </div>
-                                </header>
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    <div className="white-card p-8 border-l-8 border-amber-500 shadow-sm">
-                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 italic font-bold tracking-widest font-bold">Komisyon Oranı (%)</p>
-                                        <input type="number" step="0.1" value={settings.defaultCommission} onChange={(e) => getCol('config').doc('app_settings').set({...settings, defaultCommission: Number(e.target.value)}, {merge:true})} className="text-2xl md:text-4xl font-black bg-transparent w-full focus:ring-0 text-slate-800 font-bold" />
-                                    </div>
-                                    <div className="white-card p-8 border-l-8 border-slate-900 shadow-sm">
-                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 italic font-bold tracking-widest font-bold">Ortalama Vade (Gün)</p>
-                                        <input type="number" value={settings.defaultValor} onChange={(e) => getCol('config').doc('app_settings').set({...settings, defaultValor: Number(e.target.value)}, {merge:true})} className="text-2xl md:text-4xl font-black bg-transparent w-full focus:ring-0 text-slate-800 font-bold" />
-                                    </div>
-                                </div>
-                                <div className="grid gap-4 mt-8">
-                                    {posSettlements.map(p => (
-                                        <div key={p.id} className={`white-card p-6 flex flex-col md:flex-row justify-between items-center transition-all ${p.isSettled ? 'opacity-30' : 'border-amber-100 shadow-lg'}`}>
-                                            <div className="flex items-center gap-6 w-full md:w-auto">
-                                                <div className={`p-4 rounded-2xl ${p.isSettled ? 'bg-slate-200' : 'bg-slate-950 text-amber-500 shadow-xl'}`}><Icon name="calendar-clock" size={24} /></div>
-                                                <div>
-                                                    <p className="text-[10px] font-black text-slate-400 uppercase italic mb-1 font-bold">İşlem: {dbToDisplay(p.date)}</p>
-                                                    <p className="text-sm font-bold text-slate-800 italic uppercase">Tahmini Vade: {p.displaySettlement}</p>
-                                                </div>
-                                            </div>
-                                            <div className="text-right w-full md:w-auto mt-4 md:mt-0">
-                                                <p className="text-[10px] font-black text-slate-400 uppercase italic mb-1 font-bold">Net Alacak</p>
-                                                <p className="text-2xl font-black text-slate-950 tracking-tighter font-bold">{formatCurrency(p.net)}</p>
-                                                <p className="text-[9px] font-bold text-slate-300 uppercase mt-1 italic">Brüt: {formatCurrency(p.gross)}</p>
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
-
-                        {/* ANALİZ / RAPORLAR (GERİ GELDİ) */}
-                        {activeTab === 'reports' && (
-                            <div className="max-w-5xl mx-auto space-y-8 animate-up pb-20">
+                        {/* REÇETELER VE MALİYET ANALİZİ */}
+                        {activeTab === 'recipe' && (
+                            <div className="max-w-6xl mx-auto space-y-8 animate-up pb-20">
                                 <header className="flex flex-col md:flex-row justify-between items-center gap-6">
-                                    <div className="flex items-center gap-4"><div className="w-2 h-12 gold-bg rounded-full shadow-[0_0_15px_#f59e0b]"></div><h2 className="text-3xl md:text-5xl font-black text-slate-900 tracking-tighter uppercase italic font-bold">İşletme Analizi</h2></div>
-                                    <div className="flex bg-slate-900 p-1.5 md:p-2 rounded-2xl md:rounded-[3rem] border border-slate-800 shadow-2xl overflow-x-auto no-scrollbar max-w-full">
-                                        {['daily', 'monthly', 'custom'].map(r => (
-                                            <button key={r} onClick={() => setReportRange(r)} className={`px-6 py-3 md:px-10 md:py-4 rounded-xl md:rounded-full text-[9px] md:text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap font-bold ${reportRange === r ? 'gold-bg text-slate-950 shadow-xl' : 'text-slate-500 hover:text-slate-300'}`}>
-                                                {r === 'daily' ? 'BUGÜN' : r === 'monthly' ? 'BU AY' : 'ÖZEL'}
+                                    <div className="flex items-center gap-4"><div className="w-2 h-12 gold-bg rounded-full shadow-[0_0_15px_#f59e0b]"></div><h2 className="text-3xl md:text-5xl font-black text-slate-900 tracking-tighter uppercase italic font-bold">Maliyet Analizi</h2></div>
+                                    <div className="flex bg-slate-900 p-1.5 md:p-2 rounded-2xl md:rounded-[3rem] border border-slate-800 shadow-2xl">
+                                        {['products', 'materials'].map(r => (
+                                            <button key={r} onClick={() => {setRecipeSubTab(r); setSelectedProductId(null);}} 
+                                                className={`px-6 py-3 md:px-10 md:py-4 rounded-xl md:rounded-full text-[9px] md:text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap font-bold ${recipeSubTab === r ? 'gold-bg text-slate-950 shadow-xl' : 'text-slate-500 hover:text-slate-300'}`}>
+                                                {r === 'products' ? 'ÜRÜN REÇETELERİ' : 'HAMMADDE FİYATLARI'}
                                             </button>
                                         ))}
                                     </div>
                                 </header>
-                                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
-                                    <div className="bg-white p-6 rounded-[2.5rem] border-l-[10px] border-emerald-500 shadow-xl">
-                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 italic font-bold">HASILAT</p>
-                                        <p className="text-xl md:text-3xl font-black text-slate-900 tracking-tighter font-bold">{formatCurrency(reportAnalysis.totalIn)}</p>
-                                    </div>
-                                    <div className="bg-white p-6 rounded-[2.5rem] border-l-[10px] border-red-500 shadow-xl">
-                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 italic font-bold">GİDER</p>
-                                        <p className="text-xl md:text-3xl font-black text-red-600 tracking-tighter font-bold">{formatCurrency(reportAnalysis.totalEx)}</p>
-                                    </div>
-                                    <div className="laos-hero-card p-6 rounded-[2.5rem] text-white shadow-2xl flex flex-col justify-center">
-                                        <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 italic font-bold">NET KÂR</p>
-                                        <p className={`text-xl md:text-3xl font-black tracking-tighter font-bold ${reportAnalysis.profit >= 0 ? 'gold-text' : 'text-red-400'}`}>{formatCurrency(reportAnalysis.profit)}</p>
-                                    </div>
-                                    <div className="bg-white p-6 rounded-[2.5rem] border-l-[10px] border-blue-500 shadow-xl">
-                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 italic font-bold font-bold">MARJ</p>
-                                        <p className="text-xl md:text-3xl font-black text-blue-600 tracking-tighter font-bold">%{reportAnalysis.margin.toFixed(1)}</p>
-                                    </div>
-                                </div>
-                                <div className="bg-slate-900 p-8 rounded-[3rem] text-white shadow-2xl relative overflow-hidden">
-                                    <div className="absolute top-0 right-0 p-10 opacity-5"><Icon name="zap" size={100} className="gold-text" /></div>
-                                    <h3 className="text-xl font-black laos-gradient-text uppercase italic mb-8 tracking-widest font-bold">Stratejik İçgörü</h3>
-                                    <div className="space-y-4 relative z-10">
-                                        <div className="bg-white/5 p-5 rounded-3xl border border-white/10">
-                                            <p className="text-[10px] font-black text-slate-500 uppercase mb-2 tracking-widest font-bold">Personel / Hasılat Oranı</p>
-                                            <p className="text-sm font-bold italic leading-relaxed text-slate-300">Bu dönemde hasılatın %{((reportAnalysis.staffEx / (reportAnalysis.totalIn || 1)) * 100).toFixed(1)}'i personel maliyetine gitti.</p>
+
+                                {recipeSubTab === 'materials' && (
+                                    <div className="white-card p-6 md:p-10 shadow-xl space-y-8">
+                                        <div className="flex justify-between items-center border-b pb-8">
+                                            <h3 className="text-xl font-black uppercase italic text-slate-800 tracking-tighter flex items-center gap-3 font-bold"><Icon name="boxes" className="text-amber-500" /> Hammadde Listesi</h3>
+                                            <button onClick={() => getCol('materials').add({name: 'Yeni Malzeme', price: 0, unit: 'kg'})} className="bg-slate-950 text-white px-8 py-4 rounded-2xl text-[10px] font-black uppercase shadow-xl italic tracking-widest font-bold">MALZEME EKLE</button>
+                                        </div>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                            {materials.map(m => (
+                                                <div key={m.id} className="bg-slate-50 p-6 rounded-3xl border border-slate-100 hover:shadow-md transition-all space-y-4">
+                                                    <div className="flex justify-between items-start font-bold">
+                                                        <input value={m.name} onChange={(e) => getCol('materials').doc(m.id).update({name: e.target.value})} className="font-black uppercase text-sm bg-transparent border-none focus:ring-0 w-full italic" />
+                                                        <button onClick={() => triggerDelete('materials', m.id)} className="text-red-200 hover:text-red-500 transition-all"><Icon name="trash-2" size={16}/></button>
+                                                    </div>
+                                                    <div className="grid grid-cols-2 gap-4">
+                                                        <div className="font-bold"><p className="text-[9px] font-black text-slate-400 uppercase italic">Birim (kg/lt/ad)</p><input value={m.unit} onChange={(e) => getCol('materials').doc(m.id).update({unit: e.target.value})} className="w-full bg-white px-3 py-2 rounded-xl text-sm border font-bold" /></div>
+                                                        <div className="font-bold"><p className="text-[9px] font-black text-slate-400 uppercase italic">Birim Fiyat (₺)</p><MoneyInput value={m.price} onChange={(val) => getCol('materials').doc(m.id).update({price: val})} className="w-full bg-white px-3 py-2 rounded-xl text-sm border font-black" /></div>
+                                                    </div>
+                                                </div>
+                                            ))}
                                         </div>
                                     </div>
-                                </div>
+                                )}
+
+                                {recipeSubTab === 'products' && !selectedProductId && (
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                                        <div onClick={() => getCol('products').add({name: 'Yeni Ürün', sellPrice: 0, ingredients: []})} className="white-card p-10 border-4 border-dashed border-slate-200 flex flex-col items-center justify-center gap-4 cursor-pointer hover:bg-slate-50 transition-all group opacity-50 font-bold">
+                                            <div className="bg-slate-100 p-6 rounded-full text-slate-400 group-hover:scale-110 transition-all font-bold"><Icon name="plus" size={40} /></div>
+                                            <p className="font-black uppercase text-xs text-slate-400 italic">YENİ REÇETE OLUŞTUR</p>
+                                        </div>
+                                        {products.map(p => {
+                                            const cost = calculateProductCost(p);
+                                            const margin = p.sellPrice > 0 ? ((p.sellPrice - cost) / p.sellPrice * 100) : 0;
+                                            return (
+                                                <div key={p.id} onClick={() => setSelectedProductId(p.id)} className="white-card p-8 cursor-pointer hover:shadow-2xl transition-all border-l-8 border-transparent hover:border-amber-500 group font-bold">
+                                                    <div className="flex justify-between items-start mb-6 font-bold">
+                                                        <div className="bg-slate-950 p-4 rounded-2xl text-amber-500 shadow-xl group-hover:scale-110 transition-all font-bold"><Icon name="coffee" size={24} /></div>
+                                                        <div className="text-right font-bold"><p className="text-[9px] font-black text-slate-400 uppercase italic font-bold">Birim Maliyet</p><p className="font-black text-2xl text-slate-900 italic tracking-tighter font-bold">{formatCurrency(cost)}</p></div>
+                                                    </div>
+                                                    <h4 className="font-black text-2xl uppercase tracking-tighter text-slate-800 mb-6 italic font-bold">{p.name}</h4>
+                                                    <div className="flex justify-between items-end border-t pt-6 font-bold">
+                                                        <div className="font-bold"><p className="text-[9px] font-bold text-slate-400 uppercase italic font-bold">Satış Fiyatı</p><p className="font-black text-amber-600 text-2xl italic tracking-tighter font-bold">{formatCurrency(p.sellPrice)}</p></div>
+                                                        <div className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase italic font-bold ${margin > 50 ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>%{margin.toFixed(0)} Kâr</div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+
+                                {recipeSubTab === 'products' && selectedProductId && (
+                                    <div className="space-y-6 md:space-y-10 animate-up font-bold">
+                                        <button onClick={() => setSelectedProductId(null)} className="font-black text-[10px] uppercase text-slate-500 bg-white px-8 py-4 rounded-full shadow-sm border flex items-center gap-2 hover:text-slate-900 italic tracking-widest font-bold"><Icon name="chevron-left" size={14} /> GERİ DÖN</button>
+                                        {products.filter(p => p.id === selectedProductId).map(p => {
+                                            const cost = calculateProductCost(p);
+                                            return (
+                                                <div key={p.id} className="grid grid-cols-1 lg:grid-cols-3 gap-10 font-bold">
+                                                    <div className="lg:col-span-1 space-y-6 font-bold">
+                                                        <div className="laos-hero-card p-10 text-white shadow-2xl font-bold">
+                                                            <input value={p.name} onChange={(e) => getCol('products').doc(p.id).update({name: e.target.value})} className="text-3xl font-black italic gold-text bg-transparent border-none focus:ring-0 uppercase w-full mb-10 font-bold" />
+                                                            <div className="space-y-4 font-bold">
+                                                                <div className="bg-white/5 p-6 rounded-3xl border border-white/10 font-bold">
+                                                                    <p className="text-[10px] font-bold text-slate-500 uppercase italic mb-1 font-bold">Birim Satış Fiyatı</p>
+                                                                    <MoneyInput value={p.sellPrice} onChange={(val) => getCol('products').doc(p.id).update({sellPrice: val})} className="text-3xl font-black bg-transparent border-none p-0 focus:ring-0 gold-text italic font-bold" />
+                                                                </div>
+                                                                <div className="bg-slate-900/50 p-6 rounded-3xl border border-slate-800 font-bold">
+                                                                    <div className="flex justify-between items-center mb-4 font-bold"><span className="text-[10px] font-bold text-slate-500 uppercase italic font-bold">Birim Maliyet</span><span className="font-black text-2xl italic text-slate-300 font-bold">{formatCurrency(cost)}</span></div>
+                                                                    <div className="flex justify-between items-center text-emerald-400 font-black italic font-bold"><span className="text-[10px] uppercase font-bold">Net Kâr</span><span className="text-2xl font-bold">{formatCurrency(p.sellPrice - cost)}</span></div>
+                                                                </div>
+                                                                <button onClick={() => triggerDelete('products', p.id)} className="w-full py-4 rounded-2xl bg-red-500/10 text-red-500 font-black text-[10px] uppercase italic tracking-widest hover:bg-red-500 hover:text-white transition-all font-bold">REÇETEYİ TAMAMEN SİL</button>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <div className="lg:col-span-2 font-bold">
+                                                        <div className="white-card p-10 shadow-2xl space-y-8 font-bold">
+                                                            <div className="flex justify-between items-center border-b pb-8 mb-4 font-bold">
+                                                                <h3 className="text-xl font-black uppercase italic text-slate-800 tracking-tighter flex items-center gap-3 font-bold"><Icon name="list-checks" className="text-amber-500" /> İçerik & Gramaj</h3>
+                                                                <select onChange={(e) => {
+                                                                    if (!e.target.value) return;
+                                                                    const updated = [...(p.ingredients || []), {materialId: e.target.value, quantity: 0}];
+                                                                    getCol('products').doc(p.id).update({ingredients: updated});
+                                                                    e.target.value = "";
+                                                                }} className="bg-slate-950 text-white px-8 py-3 rounded-2xl text-[10px] font-black uppercase shadow-xl font-bold italic tracking-widest font-bold">
+                                                                    <option value="">+ MALZEME EKLE</option>
+                                                                    {materials.map(m => <option key={m.id} value={m.id}>{m.name.toUpperCase()}</option>)}
+                                                                </select>
+                                                            </div>
+                                                            <div className="space-y-4 font-bold">
+                                                                {p.ingredients?.map((ing, idx) => {
+                                                                    const mat = materials.find(m => m.id === ing.materialId);
+                                                                    const ingCost = (Number(mat?.price || 0) / 1000) * Number(ing.quantity || 0);
+                                                                    return (
+                                                                        <div key={idx} className="flex items-center gap-6 p-6 bg-slate-50 rounded-3xl border border-slate-100 hover:shadow-md transition-all font-bold">
+                                                                            <div className="bg-white p-4 rounded-2xl shadow-sm text-amber-500 font-bold"><Icon name="droplet" size={20} /></div>
+                                                                            <div className="flex-1 font-bold"><p className="text-sm font-black uppercase tracking-tighter text-slate-800 italic font-bold">{mat?.name || '...'}</p><p className="text-[9px] font-black text-slate-400 italic uppercase font-bold">Birim: {formatCurrency(mat?.price)} / {mat?.unit}</p></div>
+                                                                            <div className="flex items-center gap-3 font-bold">
+                                                                                <input type="number" value={ing.quantity} onChange={(e) => {
+                                                                                    const updated = [...p.ingredients];
+                                                                                    updated[idx].quantity = e.target.value;
+                                                                                    getCol('products').doc(p.id).update({ingredients: updated});
+                                                                                }} className="w-24 bg-white p-3 rounded-2xl border font-black text-sm text-center focus:ring-amber-500 shadow-inner italic font-bold" />
+                                                                                <span className="text-[10px] font-black text-slate-400 italic font-bold">GR / ML</span>
+                                                                            </div>
+                                                                            <div className="text-right w-24 font-bold"><p className="text-[9px] font-bold text-slate-400 uppercase italic font-bold">Tutar</p><p className="font-black text-sm text-slate-900 font-bold italic font-bold">{formatCurrency(ingCost)}</p></div>
+                                                                            <button onClick={() => {
+                                                                                const updated = p.ingredients.filter((_, i) => i !== idx);
+                                                                                getCol('products').doc(p.id).update({ingredients: updated});
+                                                                            }} className="text-red-200 hover:text-red-500 transition-all ml-4 font-bold"><Icon name="trash-2" size={18} /></button>
+                                                                        </div>
+                                                                    );
+                                                                })}
+                                                                {(!p.ingredients || p.ingredients.length === 0) && <div className="text-center py-10 text-slate-300 font-black uppercase text-xs italic font-bold">Henüz içerik eklenmedi.</div>}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
                             </div>
                         )}
 
@@ -554,7 +554,7 @@
                                                 <MoneyInput value={log.card} onChange={(val) => getCol('dailyLogs').doc(log.id).update({card: val})} className="w-full bg-blue-50 p-6 rounded-2xl font-black text-xl text-blue-700 border-none shadow-inner font-bold" />
                                             </div>
                                         </div>
-                                        <div className="bg-slate-950 p-6 rounded-3xl border border-slate-800 shadow-inner text-center">
+                                        <div className="bg-slate-950 p-6 rounded-3xl border border-slate-800 shadow-inner text-center font-bold">
                                             <p className="text-[10px] font-black text-amber-500 mb-1 uppercase tracking-widest italic font-bold font-bold">Kredi Girişi</p>
                                             <MoneyInput value={log.dailyLoan || 0} onChange={(val) => getCol('dailyLogs').doc(log.id).update({dailyLoan: val})} className="w-full bg-transparent p-0 border-none font-black text-3xl text-white italic text-center focus:ring-0 font-bold" placeholder="0" />
                                         </div>
@@ -563,7 +563,82 @@
                             </div>
                         )}
 
-                        {/* PERSONEL YÖNETİMİ (BAKİYE HATASI DÜZELTİLMİŞ) */}
+                        {/* POS ANALİZİ */}
+                        {activeTab === 'pos' && (
+                            <div className="max-w-4xl mx-auto space-y-6 md:space-y-10 animate-up font-bold">
+                                <header className="flex flex-col md:flex-row justify-between items-start md:items-center mb-10 gap-6 font-bold">
+                                    <h2 className="text-2xl md:text-4xl font-black text-slate-900 uppercase italic tracking-tighter laos-gradient-text font-bold">POS Alacak Analizi</h2>
+                                    <div className="laos-hero-card text-white px-8 py-6 shadow-xl border-b-8 border-amber-500 font-bold">
+                                        <p className="text-[10px] font-bold text-slate-400 uppercase mb-1 tracking-widest italic font-bold">Net Bekleyen POS</p>
+                                        <p className="text-2xl md:text-4xl font-black gold-text break-all font-bold">{formatCurrency(globalStats.posPending)}</p>
+                                    </div>
+                                </header>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 font-bold">
+                                    <div className="white-card p-8 border-l-8 border-amber-500 shadow-sm font-bold">
+                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 italic font-bold tracking-widest font-bold">Komisyon Oranı (%)</p>
+                                        <input type="number" step="0.1" value={settings.defaultCommission} onChange={(e) => saveSetting('defaultCommission', e.target.value)} className="text-2xl md:text-4xl font-black bg-transparent w-full focus:ring-0 text-slate-800 font-bold" />
+                                    </div>
+                                    <div className="white-card p-8 border-l-8 border-slate-900 shadow-sm font-bold">
+                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 italic font-bold tracking-widest font-bold">Ortalama Vade (Gün)</p>
+                                        <input type="number" value={settings.defaultValor} onChange={(e) => saveSetting('defaultValor', e.target.value)} className="text-2xl md:text-4xl font-black bg-transparent w-full focus:ring-0 text-slate-800 font-bold" />
+                                    </div>
+                                </div>
+                                <div className="grid gap-4 mt-8 font-bold">
+                                    {posSettlements.map(p => (
+                                        <div key={p.id} className={`white-card p-6 flex flex-col md:flex-row justify-between items-center transition-all ${p.isSettled ? 'opacity-30' : 'border-amber-100 shadow-lg'} font-bold`}>
+                                            <div className="flex items-center gap-6 w-full md:w-auto font-bold">
+                                                <div className={`p-4 rounded-2xl ${p.isSettled ? 'bg-slate-200' : 'bg-slate-950 text-amber-500 shadow-xl'} font-bold`}><Icon name="calendar-clock" size={24} /></div>
+                                                <div className="font-bold">
+                                                    <p className="text-[10px] font-black text-slate-400 uppercase italic mb-1 font-bold">İşlem: {dbToDisplay(p.date)}</p>
+                                                    <p className="text-sm font-bold text-slate-800 italic uppercase font-bold">Tahmini Vade: {p.displaySettlement}</p>
+                                                </div>
+                                            </div>
+                                            <div className="text-right w-full md:w-auto mt-4 md:mt-0 font-bold">
+                                                <p className="text-[10px] font-black text-slate-400 uppercase italic mb-1 font-bold">Net Alacak</p>
+                                                <p className="text-2xl font-black text-slate-950 tracking-tighter font-bold">{formatCurrency(p.net)}</p>
+                                                <p className="text-[9px] font-bold text-slate-300 uppercase mt-1 italic font-bold">Brüt: {formatCurrency(p.gross)}</p>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* ANALİZ / RAPORLAR */}
+                        {activeTab === 'reports' && (
+                            <div className="max-w-5xl mx-auto space-y-8 animate-up pb-20 font-bold">
+                                <header className="flex flex-col md:flex-row justify-between items-center gap-6 font-bold">
+                                    <div className="flex items-center gap-4 font-bold"><div className="w-2 h-12 gold-bg rounded-full shadow-[0_0_15px_#f59e0b] font-bold"></div><h2 className="text-3xl md:text-5xl font-black text-slate-900 tracking-tighter uppercase italic font-bold">İşletme Analizi</h2></div>
+                                    <div className="flex bg-slate-900 p-1.5 md:p-2 rounded-2xl md:rounded-[3rem] border border-slate-800 shadow-2xl overflow-x-auto no-scrollbar max-w-full font-bold">
+                                        {['daily', 'monthly', 'custom'].map(r => (
+                                            <button key={r} onClick={() => setReportRange(r)} className={`px-6 py-3 md:px-10 md:py-4 rounded-xl md:rounded-full text-[9px] md:text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap font-bold ${reportRange === r ? 'gold-bg text-slate-950 shadow-xl' : 'text-slate-500 hover:text-slate-300'}`}>
+                                                {r === 'daily' ? 'BUGÜN' : r === 'monthly' ? 'BU AY' : 'ÖZEL'}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </header>
+                                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6 font-bold">
+                                    <div className="bg-white p-6 rounded-[2.5rem] border-l-[10px] border-emerald-500 shadow-xl font-bold">
+                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 italic font-bold">HASILAT</p>
+                                        <p className="text-xl md:text-3xl font-black text-slate-900 tracking-tighter font-bold">{formatCurrency(reportAnalysis.totalIn)}</p>
+                                    </div>
+                                    <div className="bg-white p-6 rounded-[2.5rem] border-l-[10px] border-red-500 shadow-xl font-bold">
+                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 italic font-bold">GİDER</p>
+                                        <p className="text-xl md:text-3xl font-black text-red-600 tracking-tighter font-bold">{formatCurrency(reportAnalysis.totalEx)}</p>
+                                    </div>
+                                    <div className="laos-hero-card p-6 rounded-[2.5rem] text-white shadow-2xl flex flex-col justify-center font-bold">
+                                        <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 italic font-bold">NET KÂR</p>
+                                        <p className={`text-xl md:text-3xl font-black tracking-tighter font-bold ${reportAnalysis.profit >= 0 ? 'gold-text' : 'text-red-400'}`}>{formatCurrency(reportAnalysis.profit)}</p>
+                                    </div>
+                                    <div className="bg-white p-6 rounded-[2.5rem] border-l-[10px] border-blue-500 shadow-xl font-bold">
+                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 italic font-bold font-bold font-bold">MARJ</p>
+                                        <p className="text-xl md:text-3xl font-black text-blue-600 tracking-tighter font-bold">%{reportAnalysis.margin.toFixed(1)}</p>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* PERSONEL YÖNETİMİ */}
                         {activeTab === 'personnel' && (
                             <div className="max-w-6xl mx-auto space-y-6 animate-up">
                                 {!selectedPersonnelId ? (
@@ -598,11 +673,26 @@
                                             return (
                                                 <div key={p.id} className="space-y-10">
                                                     <div className="laos-hero-card p-10 md:p-14 text-white shadow-2xl">
-                                                        <input value={p.name} onChange={(e) => getCol('personnel').doc(p.id).update({name: e.target.value})} className="text-3xl md:text-6xl font-black bg-transparent w-full uppercase gold-text italic tracking-tighter mb-10 font-bold" />
+                                                        <input value={p.name} onChange={(e) => getCol('personnel').doc(p.id).update({name: e.target.value})} className="text-3xl md:text-6xl font-black bg-transparent w-full uppercase gold-text italic tracking-tighter mb-10 font-bold shadow-none border-none focus:ring-0" />
                                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                                                             <div className="bg-slate-900/50 p-8 rounded-[2rem] border border-slate-800 font-bold"><p className="text-[10px] font-bold text-slate-500 uppercase mb-2 italic tracking-widest font-bold">Maaş</p><div className="flex items-center gap-2 font-black text-3xl md:text-5xl gold-text italic font-bold"><span className="text-xl font-bold">₺</span><MoneyInput value={p.fixedSalary} onChange={(val) => getCol('personnel').doc(p.id).update({fixedSalary: val})} className="bg-transparent w-full border-none focus:ring-0 font-bold" /></div></div>
                                                             <div className="bg-slate-900/50 p-8 rounded-[2rem] border border-slate-800 font-bold"><p className="text-[10px] font-bold text-slate-500 uppercase mb-2 italic tracking-widest font-bold">Borç</p><p className={`text-3xl md:text-6xl font-black italic break-all font-bold ${balance > 0 ? 'text-red-400' : 'text-green-400'}`}>{formatCurrency(balance)}</p></div>
                                                         </div>
+                                                    </div>
+                                                    <div className="white-card p-10 shadow-2xl space-y-6">
+                                                        <div className="flex justify-between items-center border-b pb-4 font-bold">
+                                                            <h3 className="text-xl font-black text-slate-800 uppercase italic font-bold">Personel Ekstresi</h3>
+                                                            <button onClick={() => getCol('personnelPayments').add({personnelId: p.id, amount: 0, date: new Date().toISOString().split('T')[0]})} className="bg-slate-950 text-white px-6 py-2 rounded-xl text-[10px] font-black uppercase font-bold italic tracking-widest">ÖDEME EKLE</button>
+                                                        </div>
+                                                        {myExtre.map(pay => (
+                                                            <div key={pay.id} className="flex justify-between items-center bg-slate-50 p-4 rounded-2xl border font-bold">
+                                                                <input type="date" value={pay.date} onChange={(e) => getCol('personnelPayments').doc(pay.id).update({date: e.target.value})} className="bg-transparent border-none p-0 font-black italic text-slate-500" />
+                                                                <div className="flex items-center gap-4 font-bold">
+                                                                    <MoneyInput value={pay.amount} onChange={(v) => getCol('personnelPayments').doc(pay.id).update({amount: v})} className="text-right font-black text-slate-900 bg-transparent border-none w-24 focus:ring-0" />
+                                                                    <button onClick={() => getCol('personnelPayments').doc(pay.id).delete()} className="text-red-200 hover:text-red-500"><Icon name="trash-2" size={18}/></button>
+                                                                </div>
+                                                            </div>
+                                                        ))}
                                                     </div>
                                                 </div>
                                             );
@@ -612,23 +702,23 @@
                             </div>
                         )}
 
-                        {/* GİDERLER */}
+                        {/* ÖDEMELER / GİDERLER */}
                         {activeTab === 'payments' && (
                             <div className="max-w-4xl mx-auto space-y-6 md:space-y-8 animate-up">
                                 <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 md:mb-10 bg-slate-950 p-6 md:p-8 rounded-3xl border-b-8 border-amber-500 shadow-2xl gap-6 font-bold">
                                     <h2 className="text-white font-black text-xl md:text-2xl uppercase tracking-widest laos-gradient-text italic font-bold">Gider Planı</h2>
-                                    <button onClick={() => getCol('scheduledPayments').add({label: 'Yeni Gider', amount: 0, status: 'pending', method: 'nakit', date: new Date().toISOString().split('T')[0]})} className="gold-bg text-slate-950 px-10 py-5 rounded-2xl font-black text-xs uppercase shadow-xl italic tracking-widest font-bold font-bold">GİDER EKLE</button>
+                                    <button onClick={() => getCol('scheduledPayments').add({label: 'Yeni Gider', amount: 0, status: 'pending', date: new Date().toISOString().split('T')[0]})} className="gold-bg text-slate-950 px-10 py-5 rounded-2xl font-black text-xs uppercase shadow-xl italic tracking-widest font-bold font-bold">GİDER EKLE</button>
                                 </div>
                                 {scheduledPayments.sort((a,b) => new Date(b.date) - new Date(a.date)).map(p => (
                                     <div key={p.id} className={`white-card p-6 md:p-10 flex flex-col md:flex-row justify-between items-center gap-6 transition-all ${p.status === 'paid' ? 'opacity-40 grayscale' : 'shadow-2xl border-l-8 border-red-500'}`}>
-                                        <div className="flex-1 w-full space-y-4">
+                                        <div className="flex-1 w-full space-y-4 font-bold">
                                             <DateInput value={p.date} onChange={(newDate) => getCol('scheduledPayments').doc(p.id).update({date: newDate})} />
-                                            <input value={p.label} onChange={(e) => getCol('scheduledPayments').doc(p.id).update({label: e.target.value})} className="font-black text-2xl w-full uppercase border-none p-0 focus:ring-0 italic text-slate-800 font-bold" />
+                                            <input value={p.label} onChange={(e) => getCol('scheduledPayments').doc(p.id).update({label: e.target.value})} className="font-black text-2xl w-full uppercase border-none p-0 focus:ring-0 italic text-slate-800 font-bold font-bold" />
                                             <div className="flex items-center gap-2 font-black text-3xl md:text-5xl text-slate-950 tracking-tighter italic font-bold">
-                                                <MoneyInput value={p.amount} onChange={(val) => getCol('scheduledPayments').doc(p.id).update({amount: val})} className="bg-transparent w-full border-none p-0 focus:ring-0 font-black font-bold" />
+                                                <MoneyInput value={p.amount} onChange={(val) => getCol('scheduledPayments').doc(p.id).update({amount: val})} className="bg-transparent w-full border-none p-0 focus:ring-0 font-black font-bold font-bold" />
                                             </div>
                                         </div>
-                                        <button onClick={() => getCol('scheduledPayments').doc(p.id).update({status: p.status === 'paid' ? 'pending' : 'paid'})} className={`px-8 py-4 rounded-2xl font-black text-xs uppercase shadow-xl font-bold ${p.status === 'paid' ? 'bg-green-500 text-white' : 'bg-slate-950 text-white font-bold'}`}>{p.status === 'paid' ? 'ÖDENDİ' : 'ÖDEMEYİ YAP'}</button>
+                                        <button onClick={() => getCol('scheduledPayments').doc(p.id).update({status: p.status === 'paid' ? 'pending' : 'paid'})} className={`px-8 py-4 rounded-2xl font-black text-xs uppercase shadow-xl font-bold font-bold ${p.status === 'paid' ? 'bg-green-500 text-white' : 'bg-slate-950 text-white font-bold'}`}>{p.status === 'paid' ? 'ÖDENDİ' : 'ÖDEMEYİ YAP'}</button>
                                     </div>
                                 ))}
                             </div>
