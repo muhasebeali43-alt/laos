@@ -122,11 +122,12 @@
 
         const { useState, useEffect, useMemo } = React;
 
-        const ALL_PAYMENT_METHODS = [
-            { id: 'nakit', label: 'Nakit', icon: 'wallet', color: 'bg-emerald-100 text-emerald-700' },
-            { id: 'havale', label: 'Havale', icon: 'landmark', color: 'bg-blue-100 text-blue-700' },
-            { id: 'cek', label: 'Çek', icon: 'files', color: 'bg-purple-100 text-purple-700' },
-            { id: 'kart', label: 'Kredi Kartı', icon: 'credit-card', color: 'bg-amber-100 text-amber-700' }
+        const MATERIAL_UNITS = [
+            { id: 'kg', label: 'Kilogram (kg)' },
+            { id: 'lt', label: 'Litre (lt)' },
+            { id: 'ad', label: 'Adet (ad)' },
+            { id: 'mg', label: 'Miligram (mg)' },
+            { id: 'paket', label: 'Paket (pkt)' }
         ];
 
         const Icon = ({ name, size = 20, className = "" }) => {
@@ -216,6 +217,7 @@
             const [selectedPersonnelId, setSelectedPersonnelId] = useState(null);
             const [selectedProductId, setSelectedProductId] = useState(null);
             const [showDeleteModal, setShowDeleteModal] = useState({ show: false, col: '', id: '' });
+            const [historyFilter, setHistoryFilter] = useState('all');
 
             const [settings, setSettings] = useState({ initialBalance: 0, defaultCommission: 3.5, defaultValor: 30 });
             const [dailyLogs, setDailyLogs] = useState([]);
@@ -245,6 +247,59 @@
                 return () => unsubscribeAuth();
             }, []);
 
+            // TÜM İŞLEMLERİN BİRLEŞTİRİLMESİ
+            const allTransactions = useMemo(() => {
+                const logs = dailyLogs.map(l => ({
+                    id: l.id,
+                    date: l.date,
+                    label: 'Günlük Kasa Satışı',
+                    amount: Number(l.cash || 0) + Number(l.card || 0),
+                    type: 'income',
+                    category: 'Satış',
+                    collection: 'dailyLogs'
+                }));
+
+                const loans = dailyLogs.filter(l => Number(l.dailyLoan) > 0).map(l => ({
+                    id: l.id + '_loan',
+                    date: l.date,
+                    label: 'Kredi / Borç Girişi',
+                    amount: Number(l.dailyLoan),
+                    type: 'loan',
+                    category: 'Kredi',
+                    collection: 'dailyLogs',
+                    subField: 'dailyLoan'
+                }));
+
+                const bills = scheduledPayments.filter(p => p.status === 'paid').map(p => ({
+                    id: p.id,
+                    date: p.date,
+                    label: p.label,
+                    amount: Number(p.amount),
+                    type: 'expense',
+                    category: 'Gider',
+                    collection: 'scheduledPayments'
+                }));
+
+                const staff = personnelPayments.map(p => {
+                    const person = personnel.find(pers => pers.id === p.personnelId);
+                    return {
+                        id: p.id,
+                        date: p.date,
+                        label: `Maaş Ödemesi: ${person?.name || 'Personel'}`,
+                        amount: Number(p.amount),
+                        type: 'expense',
+                        category: 'Maaş',
+                        collection: 'personnelPayments'
+                    };
+                });
+
+                const combined = [...logs, ...loans, ...bills, ...staff].sort((a, b) => new Date(b.date) - new Date(a.date));
+                
+                if (historyFilter === 'income') return combined.filter(t => t.type === 'income' || t.type === 'loan');
+                if (historyFilter === 'expense') return combined.filter(t => t.type === 'expense');
+                return combined;
+            }, [dailyLogs, scheduledPayments, personnelPayments, personnel, historyFilter]);
+
             const globalStats = useMemo(() => {
                 const logsTotals = dailyLogs.reduce((acc, log) => {
                     const comm = (Number(log.card || 0) * (settings.defaultCommission || 3.5)) / 100;
@@ -265,7 +320,6 @@
                 const netCash = Number(settings.initialBalance || 0) + logsTotals.cash + logsTotals.card + logsTotals.loan - (staffPaidTotal + billsPaid + logsTotals.comm);
                 const posPending = logsTotals.card - logsTotals.comm;
                 
-                // Yaklaşan ödemeler hesabı süzgeci
                 const upcoming = scheduledPayments
                     .filter(p => p.status !== 'paid')
                     .sort((a, b) => new Date(a.date) - new Date(b.date))
@@ -274,29 +328,56 @@
                 return { ...logsTotals, billsPaid, staffPaidTotal, netCash, posPending, upcoming };
             }, [dailyLogs, scheduledPayments, personnelPayments, personnel, settings]);
 
-            const posSettlements = useMemo(() => {
-                const today = new Date(); today.setHours(0, 0, 0, 0);
-                const valorDays = Number(settings.defaultValor || 30);
-                return dailyLogs.filter(log => Number(log.card) > 0).map(log => {
-                    const logDate = new Date(log.date);
-                    const settlementDate = new Date(logDate);
-                    settlementDate.setDate(logDate.getDate() + valorDays); 
-                    const commission = (Number(log.card) * (settings.defaultCommission || 3.5)) / 100;
-                    return { 
-                        id: log.id, date: log.date, 
-                        displaySettlement: settlementDate.toLocaleDateString('tr-TR'), 
-                        gross: Number(log.card), net: Number(log.card) - commission, 
-                        isSettled: settlementDate <= today 
-                    };
-                }).sort((a, b) => new Date(a.date) - new Date(b.date));
-            }, [dailyLogs, settings]);
+            const reportAnalysis = useMemo(() => {
+                const now = new Date();
+                const todayStr = now.toISOString().split('T')[0];
+                const startOfMonthStr = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+
+                let logs = [...dailyLogs];
+                let pPayments = [...personnelPayments];
+                let bills = [...scheduledPayments];
+
+                const filterByDate = (arr) => {
+                    if (reportRange === 'daily') return arr.filter(l => l.date === todayStr);
+                    if (reportRange === 'monthly') return arr.filter(l => l.date >= startOfMonthStr);
+                    if (reportRange === 'custom') return arr.filter(l => l.date >= customStartDate && l.date <= customEndDate);
+                    return arr;
+                };
+
+                logs = filterByDate(logs);
+                pPayments = filterByDate(pPayments);
+                bills = filterByDate(bills.filter(b => b.status === 'paid'));
+
+                const incomeCash = logs.reduce((acc, log) => acc + Number(log.cash || 0), 0);
+                const incomeCard = logs.reduce((acc, log) => acc + Number(log.card || 0), 0);
+                const incomeLoan = logs.reduce((acc, log) => acc + Number(log.dailyLoan || 0), 0);
+                
+                const totalRevenue = incomeCash + incomeCard; 
+                const staffExpense = pPayments.reduce((acc, p) => acc + Number(p.amount || 0), 0);
+                const billsExpense = bills.reduce((acc, p) => acc + Number(p.amount || 0), 0);
+                const commExpense = logs.reduce((acc, log) => acc + (Number(log.card || 0) * (settings.defaultCommission || 3.5)) / 100, 0);
+                
+                const totalExpense = staffExpense + billsExpense + commExpense;
+                const profit = totalRevenue - totalExpense;
+                const margin = totalRevenue > 0 ? (profit / totalRevenue) * 100 : 0;
+
+                return { 
+                    incomeCash, incomeCard, incomeLoan, totalRevenue,
+                    staffExpense, billsExpense, commExpense, totalExpense,
+                    profit, margin,
+                    raw: { logs, pPayments, bills } 
+                };
+            }, [dailyLogs, personnelPayments, scheduledPayments, reportRange, customStartDate, customEndDate, settings]);
 
             const calculateProductCost = (product) => {
                 if (!product.ingredients || product.ingredients.length === 0) return 0;
                 return product.ingredients.reduce((total, ing) => {
                     const mat = materials.find(m => m.id === ing.materialId);
                     if (!mat) return total;
-                    const unitPrice = Number(mat.price || 0) / 1000;
+                    let unitFactor = 1000;
+                    if (mat.unit === 'mg') unitFactor = 1;
+                    if (mat.unit === 'ad' || mat.unit === 'paket') unitFactor = 1;
+                    const unitPrice = Number(mat.price || 0) / unitFactor;
                     return total + (unitPrice * Number(ing.quantity || 0));
                 }, 0);
             };
@@ -306,15 +387,27 @@
             
             const confirmDelete = async () => { 
                 const { col, id } = showDeleteModal; 
-                await getCol(col).doc(id).delete(); 
-                if (col === 'personnel') {
-                    const paymentsToDelete = personnelPayments.filter(p => p.personnelId === id);
-                    for (const pay of paymentsToDelete) await getCol('personnelPayments').doc(pay.id).delete();
+                if (!col || !id) return;
+                try {
+                    // Eğer loan siliyorsak aslında log'u değil log içindeki loan alanını 0 yapmalıyız
+                    if (id.endsWith('_loan')) {
+                        const originalId = id.replace('_loan', '');
+                        await getCol('dailyLogs').doc(originalId).update({ dailyLoan: 0 });
+                    } else {
+                        await getCol(col).doc(id).delete(); 
+                        if (col === 'personnel') {
+                            const paymentsToDelete = personnelPayments.filter(p => p.personnelId === id);
+                            for (const pay of paymentsToDelete) await getCol('personnelPayments').doc(pay.id).delete();
+                        }
+                    }
+                } catch (e) {
+                    console.error("Hata:", e);
+                } finally {
+                    setShowDeleteModal({ show: false, col: '', id: '' }); 
                 }
-                setShowDeleteModal({ show: false, col: '', id: '' }); 
             };
 
-            if (loading) return <div className="min-h-screen bg-[#0f172a] flex items-center justify-center text-white font-black uppercase animate-pulse">Laos Finans Hazırlanıyor...</div>;
+            if (loading) return <div className="min-h-screen bg-[#0f172a] flex items-center justify-center text-white font-black uppercase animate-pulse">Yükleniyor...</div>;
 
             return (
                 <div className="min-h-screen flex flex-col md:flex-row pb-24 md:pb-0 overflow-x-hidden bg-[#F1F5F9]">
@@ -324,7 +417,7 @@
                             <div className="bg-white rounded-[2rem] p-8 max-w-sm w-full shadow-2xl animate-up text-center border">
                                 <div className="w-16 h-16 bg-red-100 text-red-500 rounded-full flex items-center justify-center mx-auto mb-6"> <Icon name="trash-2" size={32} /> </div>
                                 <h3 className="text-xl font-black text-slate-900 mb-2 uppercase tracking-tighter">İşlemi Onayla</h3>
-                                <div className="flex gap-4 mt-8">
+                                <div className="flex gap-4">
                                     <button onClick={() => setShowDeleteModal({show:false, col:'', id:''})} className="flex-1 py-4 rounded-xl bg-slate-100 text-slate-500 font-black text-xs uppercase tracking-widest">VAZGEÇ</button>
                                     <button onClick={confirmDelete} className="flex-1 py-4 rounded-xl bg-red-500 text-white font-black text-xs uppercase shadow-lg">SİL</button>
                                 </div>
@@ -332,14 +425,15 @@
                         </div>
                     )}
 
-                    <nav className="fixed bottom-0 left-0 right-0 md:relative md:w-64 bg-[#0f172a] text-white p-2 md:p-6 flex md:flex-col justify-around md:justify-start gap-1 md:gap-4 z-50 shadow-2xl">
-                        <div className="hidden md:flex items-center gap-3 mb-10 px-2">
-                            <div className="w-8 h-8 gold-bg rounded-full flex items-center justify-center text-slate-900 font-black italic shadow-[0_0_15px_#f59e0b] text-xs">L</div>
+                    <nav className="fixed bottom-0 left-0 right-0 md:relative md:w-64 bg-[#0f172a] text-white p-2 md:p-6 flex md:flex-col justify-around md:justify-start gap-1 md:gap-4 z-50 shadow-2xl font-bold">
+                        <div className="hidden md:flex items-center gap-3 mb-10 px-2 font-bold">
+                            <div className="w-8 h-8 gold-bg rounded-full flex items-center justify-center text-slate-900 font-black italic shadow-[0_0_15px_#f59e0b] text-xs font-bold">L</div>
                             <h2 className="font-black text-xl italic tracking-tighter uppercase laos-gradient-text">Kafe Analiz</h2>
                         </div>
                         {[
                             {id:'dashboard', icon:'layout-dashboard', l:'Özet'},
                             {id:'daily', icon:'calendar-days', l:'Günlük'},
+                            {id:'transactions', icon:'history', l:'İşlemler'}, // YENİ SEKME
                             {id:'pos', icon:'credit-card', l:'POS'},
                             {id:'recipe', icon:'chef-hat', l:'Reçeteler'},
                             {id:'personnel', icon:'users', l:'Personel'},
@@ -358,10 +452,10 @@
                         
                         {/* ÖZET PANELİ */}
                         {activeTab === 'dashboard' && (
-                            <div className="max-w-4xl mx-auto space-y-6 md:space-y-10 animate-up">
-                                <header className="flex items-center gap-3 md:gap-4"><div className="w-1.5 h-8 md:h-10 gold-bg rounded-full"></div><h1 className="text-2xl md:text-5xl font-black text-slate-900 tracking-tighter italic uppercase font-bold">Finansal Durum</h1></header>
+                            <div className="max-w-4xl mx-auto space-y-6 md:space-y-10 animate-up font-bold">
+                                <header className="flex items-center gap-3 md:gap-4 font-bold font-bold"><div className="w-1.5 h-8 md:h-10 gold-bg rounded-full"></div><h1 className="text-2xl md:text-5xl font-black text-slate-900 tracking-tighter italic uppercase">Finansal Durum</h1></header>
                                 
-                                <div className="laos-hero-card p-6 md:p-14 text-white shadow-2xl relative overflow-hidden group">
+                                <div className="laos-hero-card p-6 md:p-14 text-white shadow-2xl relative overflow-hidden group font-bold">
                                     <p className="text-[8px] md:text-[12px] font-bold text-slate-400 uppercase mb-3 tracking-[0.4em] flex items-center gap-2 italic">NET NAKİT GÜCÜ</p>
                                     <h2 className="text-3xl md:text-8xl font-black gold-text tracking-tighter mb-8 md:mb-16 italic break-all font-bold">{formatCurrency(globalStats.netCash)}</h2>
                                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-12 border-t border-white/5 pt-8 md:pt-10 font-bold">
@@ -372,16 +466,15 @@
                                     </div>
                                 </div>
 
-                                {/* YAKLAŞAN ÖDEMELER (GERİ EKLENDİ) */}
-                                <div className="white-card p-6 md:p-10 border-l-8 border-red-500 shadow-xl space-y-6">
+                                <div className="white-card p-6 md:p-10 border-l-8 border-red-500 shadow-xl space-y-6 font-bold">
                                     <div className="flex justify-between items-center border-b pb-4">
-                                        <h3 className="text-lg md:text-2xl font-black text-slate-800 uppercase italic tracking-tighter flex items-center gap-3 font-bold">
+                                        <h3 className="text-lg md:text-2xl font-black text-slate-800 uppercase italic tracking-tighter flex items-center gap-3">
                                             <Icon name="bell" className="text-red-500" /> Yaklaşan Ödemeler
                                         </h3>
                                     </div>
-                                    <div className="space-y-4">
+                                    <div className="space-y-4 font-bold">
                                         {globalStats.upcoming && globalStats.upcoming.length > 0 ? globalStats.upcoming.map(p => (
-                                            <div key={p.id} className="flex justify-between items-center bg-slate-50 p-4 md:p-6 rounded-[1.5rem] border transition-all hover:bg-slate-100">
+                                            <div key={p.id} className="flex justify-between items-center bg-slate-50 p-4 md:p-6 rounded-[1.5rem] border transition-all hover:bg-slate-100 font-bold">
                                                 <div className="flex items-center gap-4">
                                                     <div className="bg-white p-2 rounded-xl text-[10px] font-black text-red-600 border border-red-100 italic tracking-tighter">{dbToDisplay(p.date)}</div>
                                                     <div><p className="font-black text-slate-800 uppercase text-xs md:text-base leading-none mb-1 font-bold">{p.label}</p></div>
@@ -394,212 +487,66 @@
                             </div>
                         )}
 
-                        {/* REÇETELER VE MALİYET ANALİZİ */}
-                        {activeTab === 'recipe' && (
-                            <div className="max-w-6xl mx-auto space-y-8 animate-up pb-20">
-                                <header className="flex flex-col md:flex-row justify-between items-center gap-6">
-                                    <div className="flex items-center gap-4"><div className="w-2 h-12 gold-bg rounded-full shadow-[0_0_15px_#f59e0b]"></div><h2 className="text-3xl md:text-5xl font-black text-slate-900 tracking-tighter uppercase italic font-bold">Maliyet Analizi</h2></div>
-                                    <div className="flex bg-slate-900 p-1.5 md:p-2 rounded-2xl md:rounded-[3rem] border border-slate-800 shadow-2xl">
-                                        {['products', 'materials'].map(r => (
-                                            <button key={r} onClick={() => {setRecipeSubTab(r); setSelectedProductId(null);}} 
-                                                className={`px-6 py-3 md:px-10 md:py-4 rounded-xl md:rounded-full text-[9px] md:text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap font-bold ${recipeSubTab === r ? 'gold-bg text-slate-950 shadow-xl' : 'text-slate-500 hover:text-slate-300'}`}>
-                                                {r === 'products' ? 'ÜRÜN REÇETELERİ' : 'HAMMADDE FİYATLARI'}
+                        {/* YENİ İŞLEMLER SEKME İÇERİĞİ */}
+                        {activeTab === 'transactions' && (
+                            <div className="max-w-6xl mx-auto space-y-8 animate-up pb-20 font-bold font-bold font-bold">
+                                <header className="flex flex-col md:flex-row justify-between items-center gap-6 font-bold font-bold font-bold">
+                                    <div className="flex items-center gap-4 font-bold font-bold font-bold font-bold"><div className="w-2 h-12 gold-bg rounded-full shadow-[0_0_15px_#f59e0b]"></div><h2 className="text-3xl md:text-5xl font-black text-slate-900 tracking-tighter uppercase italic font-bold font-bold font-bold font-bold">Tüm Hareketler</h2></div>
+                                    <div className="flex bg-slate-950 p-1.5 md:p-2 rounded-2xl md:rounded-[3rem] border border-slate-800 shadow-2xl overflow-x-auto no-scrollbar max-w-full font-bold">
+                                        {['all', 'income', 'expense'].map(f => (
+                                            <button key={f} onClick={() => setHistoryFilter(f)} className={`px-6 py-3 md:px-10 md:py-4 rounded-xl md:rounded-full text-[9px] md:text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap font-bold ${historyFilter === f ? 'gold-bg text-slate-950 shadow-xl' : 'text-slate-500 hover:text-slate-300'}`}>
+                                                {f === 'all' ? 'HEPSİ' : f === 'income' ? 'GELİRLER' : 'GİDERLER'}
                                             </button>
                                         ))}
                                     </div>
                                 </header>
 
-                                {recipeSubTab === 'materials' && (
-                                    <div className="white-card p-6 md:p-10 shadow-xl space-y-8">
-                                        <div className="flex justify-between items-center border-b pb-8">
-                                            <h3 className="text-xl font-black uppercase italic text-slate-800 tracking-tighter flex items-center gap-3 font-bold"><Icon name="boxes" className="text-amber-500" /> Hammadde Listesi</h3>
-                                            <button onClick={() => getCol('materials').add({name: 'Yeni Malzeme', price: 0, unit: 'kg'})} className="bg-slate-950 text-white px-8 py-4 rounded-2xl text-[10px] font-black uppercase shadow-xl italic tracking-widest font-bold">MALZEME EKLE</button>
-                                        </div>
-                                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                                            {materials.map(m => (
-                                                <div key={m.id} className="bg-slate-50 p-6 rounded-3xl border border-slate-100 hover:shadow-md transition-all space-y-4">
-                                                    <div className="flex justify-between items-start font-bold">
-                                                        <input value={m.name} onChange={(e) => getCol('materials').doc(m.id).update({name: e.target.value})} className="font-black uppercase text-sm bg-transparent border-none focus:ring-0 w-full italic" />
-                                                        <button onClick={() => triggerDelete('materials', m.id)} className="text-red-200 hover:text-red-500 transition-all"><Icon name="trash-2" size={16}/></button>
-                                                    </div>
-                                                    <div className="grid grid-cols-2 gap-4">
-                                                        <div className="font-bold"><p className="text-[9px] font-black text-slate-400 uppercase italic">Birim (kg/lt/ad)</p><input value={m.unit} onChange={(e) => getCol('materials').doc(m.id).update({unit: e.target.value})} className="w-full bg-white px-3 py-2 rounded-xl text-sm border font-bold" /></div>
-                                                        <div className="font-bold"><p className="text-[9px] font-black text-slate-400 uppercase italic">Birim Fiyat (₺)</p><MoneyInput value={m.price} onChange={(val) => getCol('materials').doc(m.id).update({price: val})} className="w-full bg-white px-3 py-2 rounded-xl text-sm border font-black" /></div>
-                                                    </div>
-                                                </div>
-                                            ))}
-                                        </div>
+                                <div className="white-card shadow-2xl overflow-hidden font-bold">
+                                    <div className="overflow-x-auto font-bold font-bold font-bold font-bold">
+                                        <table className="w-full text-left font-bold font-bold font-bold">
+                                            <thead>
+                                                <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest font-bold">
+                                                    <th className="p-6">Tarih</th>
+                                                    <th className="p-6">Tür / Kategori</th>
+                                                    <th className="p-6">Açıklama</th>
+                                                    <th className="p-6 text-right">Tutar</th>
+                                                    <th className="p-6 text-center">İşlem</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-100 font-bold font-bold font-bold">
+                                                {allTransactions.map((t, idx) => (
+                                                    <tr key={t.id + '_' + idx} className="hover:bg-slate-50/50 transition-all font-bold">
+                                                        <td className="p-6 text-sm text-slate-500 italic font-bold font-bold">{dbToDisplay(t.date)}</td>
+                                                        <td className="p-6">
+                                                            <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase italic ${
+                                                                t.type === 'income' ? 'bg-emerald-100 text-emerald-600' : 
+                                                                t.type === 'loan' ? 'bg-blue-100 text-blue-600' : 'bg-red-100 text-red-600'
+                                                            }`}>
+                                                                {t.category}
+                                                            </span>
+                                                        </td>
+                                                        <td className="p-6 font-black text-slate-800 text-sm uppercase tracking-tighter italic font-bold font-bold">{t.label}</td>
+                                                        <td className={`p-6 text-right font-black text-base italic font-bold font-bold font-bold ${
+                                                            t.type === 'expense' ? 'text-red-500' : 'text-emerald-500'
+                                                        }`}>
+                                                            {t.type === 'expense' ? '-' : '+'}{formatCurrency(t.amount)}
+                                                        </td>
+                                                        <td className="p-6 text-center">
+                                                            <button 
+                                                                onClick={() => triggerDelete(t.collection, t.id)}
+                                                                className="bg-red-500 text-white px-5 py-2 rounded-xl text-[10px] font-black uppercase hover:bg-red-600 transition-all shadow-md font-bold"
+                                                            >
+                                                                SİL
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                        {allTransactions.length === 0 && (
+                                            <div className="text-center py-20 text-slate-300 font-black uppercase italic text-xs font-bold font-bold">Herhangi bir işlem kaydı bulunamadı.</div>
+                                        )}
                                     </div>
-                                )}
-
-                                {recipeSubTab === 'products' && !selectedProductId && (
-                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-                                        <div onClick={() => getCol('products').add({name: 'Yeni Ürün', sellPrice: 0, ingredients: []})} className="white-card p-10 border-4 border-dashed border-slate-200 flex flex-col items-center justify-center gap-4 cursor-pointer hover:bg-slate-50 transition-all group opacity-50 font-bold">
-                                            <div className="bg-slate-100 p-6 rounded-full text-slate-400 group-hover:scale-110 transition-all font-bold"><Icon name="plus" size={40} /></div>
-                                            <p className="font-black uppercase text-xs text-slate-400 italic">YENİ REÇETE OLUŞTUR</p>
-                                        </div>
-                                        {products.map(p => {
-                                            const cost = calculateProductCost(p);
-                                            const margin = p.sellPrice > 0 ? ((p.sellPrice - cost) / p.sellPrice * 100) : 0;
-                                            return (
-                                                <div key={p.id} onClick={() => setSelectedProductId(p.id)} className="white-card p-8 cursor-pointer hover:shadow-2xl transition-all border-l-8 border-transparent hover:border-amber-500 group font-bold">
-                                                    <div className="flex justify-between items-start mb-6 font-bold">
-                                                        <div className="bg-slate-950 p-4 rounded-2xl text-amber-500 shadow-xl group-hover:scale-110 transition-all font-bold"><Icon name="coffee" size={24} /></div>
-                                                        <div className="text-right font-bold"><p className="text-[9px] font-black text-slate-400 uppercase italic font-bold">Birim Maliyet</p><p className="font-black text-2xl text-slate-900 italic tracking-tighter font-bold">{formatCurrency(cost)}</p></div>
-                                                    </div>
-                                                    <h4 className="font-black text-2xl uppercase tracking-tighter text-slate-800 mb-6 italic font-bold">{p.name}</h4>
-                                                    <div className="flex justify-between items-end border-t pt-6 font-bold">
-                                                        <div className="font-bold"><p className="text-[9px] font-bold text-slate-400 uppercase italic font-bold">Satış Fiyatı</p><p className="font-black text-amber-600 text-2xl italic tracking-tighter font-bold">{formatCurrency(p.sellPrice)}</p></div>
-                                                        <div className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase italic font-bold ${margin > 50 ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>%{margin.toFixed(0)} Kâr</div>
-                                                    </div>
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                )}
-
-                                {recipeSubTab === 'products' && selectedProductId && (
-                                    <div className="space-y-6 md:space-y-10 animate-up font-bold">
-                                        <button onClick={() => setSelectedProductId(null)} className="font-black text-[10px] uppercase text-slate-500 bg-white px-8 py-4 rounded-full shadow-sm border flex items-center gap-2 hover:text-slate-900 italic tracking-widest font-bold"><Icon name="chevron-left" size={14} /> GERİ DÖN</button>
-                                        {products.filter(p => p.id === selectedProductId).map(p => {
-                                            const cost = calculateProductCost(p);
-                                            return (
-                                                <div key={p.id} className="grid grid-cols-1 lg:grid-cols-3 gap-10 font-bold">
-                                                    <div className="lg:col-span-1 space-y-6 font-bold">
-                                                        <div className="laos-hero-card p-10 text-white shadow-2xl font-bold">
-                                                            <input value={p.name} onChange={(e) => getCol('products').doc(p.id).update({name: e.target.value})} className="text-3xl font-black italic gold-text bg-transparent border-none focus:ring-0 uppercase w-full mb-10 font-bold" />
-                                                            <div className="space-y-4 font-bold">
-                                                                <div className="bg-white/5 p-6 rounded-3xl border border-white/10 font-bold">
-                                                                    <p className="text-[10px] font-bold text-slate-500 uppercase italic mb-1 font-bold">Birim Satış Fiyatı</p>
-                                                                    <MoneyInput value={p.sellPrice} onChange={(val) => getCol('products').doc(p.id).update({sellPrice: val})} className="text-3xl font-black bg-transparent border-none p-0 focus:ring-0 gold-text italic font-bold" />
-                                                                </div>
-                                                                <div className="bg-slate-900/50 p-6 rounded-3xl border border-slate-800 font-bold">
-                                                                    <div className="flex justify-between items-center mb-4 font-bold"><span className="text-[10px] font-bold text-slate-500 uppercase italic font-bold">Birim Maliyet</span><span className="font-black text-2xl italic text-slate-300 font-bold">{formatCurrency(cost)}</span></div>
-                                                                    <div className="flex justify-between items-center text-emerald-400 font-black italic font-bold"><span className="text-[10px] uppercase font-bold">Net Kâr</span><span className="text-2xl font-bold">{formatCurrency(p.sellPrice - cost)}</span></div>
-                                                                </div>
-                                                                <button onClick={() => triggerDelete('products', p.id)} className="w-full py-4 rounded-2xl bg-red-500/10 text-red-500 font-black text-[10px] uppercase italic tracking-widest hover:bg-red-500 hover:text-white transition-all font-bold">REÇETEYİ TAMAMEN SİL</button>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                    <div className="lg:col-span-2 font-bold">
-                                                        <div className="white-card p-10 shadow-2xl space-y-8 font-bold">
-                                                            <div className="flex justify-between items-center border-b pb-8 mb-4 font-bold">
-                                                                <h3 className="text-xl font-black uppercase italic text-slate-800 tracking-tighter flex items-center gap-3 font-bold"><Icon name="list-checks" className="text-amber-500" /> İçerik & Gramaj</h3>
-                                                                <select onChange={(e) => {
-                                                                    if (!e.target.value) return;
-                                                                    const updated = [...(p.ingredients || []), {materialId: e.target.value, quantity: 0}];
-                                                                    getCol('products').doc(p.id).update({ingredients: updated});
-                                                                    e.target.value = "";
-                                                                }} className="bg-slate-950 text-white px-8 py-3 rounded-2xl text-[10px] font-black uppercase shadow-xl font-bold italic tracking-widest font-bold">
-                                                                    <option value="">+ MALZEME EKLE</option>
-                                                                    {materials.map(m => <option key={m.id} value={m.id}>{m.name.toUpperCase()}</option>)}
-                                                                </select>
-                                                            </div>
-                                                            <div className="space-y-4 font-bold">
-                                                                {p.ingredients?.map((ing, idx) => {
-                                                                    const mat = materials.find(m => m.id === ing.materialId);
-                                                                    const ingCost = (Number(mat?.price || 0) / 1000) * Number(ing.quantity || 0);
-                                                                    return (
-                                                                        <div key={idx} className="flex items-center gap-6 p-6 bg-slate-50 rounded-3xl border border-slate-100 hover:shadow-md transition-all font-bold">
-                                                                            <div className="bg-white p-4 rounded-2xl shadow-sm text-amber-500 font-bold"><Icon name="droplet" size={20} /></div>
-                                                                            <div className="flex-1 font-bold"><p className="text-sm font-black uppercase tracking-tighter text-slate-800 italic font-bold">{mat?.name || '...'}</p><p className="text-[9px] font-black text-slate-400 italic uppercase font-bold">Birim: {formatCurrency(mat?.price)} / {mat?.unit}</p></div>
-                                                                            <div className="flex items-center gap-3 font-bold">
-                                                                                <input type="number" value={ing.quantity} onChange={(e) => {
-                                                                                    const updated = [...p.ingredients];
-                                                                                    updated[idx].quantity = e.target.value;
-                                                                                    getCol('products').doc(p.id).update({ingredients: updated});
-                                                                                }} className="w-24 bg-white p-3 rounded-2xl border font-black text-sm text-center focus:ring-amber-500 shadow-inner italic font-bold" />
-                                                                                <span className="text-[10px] font-black text-slate-400 italic font-bold">GR / ML</span>
-                                                                            </div>
-                                                                            <div className="text-right w-24 font-bold"><p className="text-[9px] font-bold text-slate-400 uppercase italic font-bold">Tutar</p><p className="font-black text-sm text-slate-900 font-bold italic font-bold">{formatCurrency(ingCost)}</p></div>
-                                                                            <button onClick={() => {
-                                                                                const updated = p.ingredients.filter((_, i) => i !== idx);
-                                                                                getCol('products').doc(p.id).update({ingredients: updated});
-                                                                            }} className="text-red-200 hover:text-red-500 transition-all ml-4 font-bold"><Icon name="trash-2" size={18} /></button>
-                                                                        </div>
-                                                                    );
-                                                                })}
-                                                                {(!p.ingredients || p.ingredients.length === 0) && <div className="text-center py-10 text-slate-300 font-black uppercase text-xs italic font-bold">Henüz içerik eklenmedi.</div>}
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                )}
-                            </div>
-                        )}
-
-                        {/* GÜNLÜK VERİLER */}
-                        {activeTab === 'daily' && (
-                            <div className="max-w-2xl mx-auto space-y-4 md:space-y-6 animate-up">
-                                <div className="flex justify-between items-center bg-slate-950 p-6 md:p-8 rounded-3xl border-b-8 border-amber-500 shadow-2xl">
-                                    <h2 className="text-white font-black text-lg md:text-2xl uppercase tracking-widest laos-gradient-text italic font-bold">Günlük Girişler</h2>
-                                    <button onClick={() => getCol('dailyLogs').add({date: new Date().toISOString().split('T')[0], cash:0, card:0, dailyLoan:0})} className="gold-bg text-slate-950 px-8 py-4 rounded-2xl font-black text-xs uppercase shadow-xl italic uppercase font-bold">YENİ GÜN</button>
-                                </div>
-                                {dailyLogs.sort((a,b) => new Date(b.date) - new Date(a.date)).map(log => (
-                                    <div key={log.id} className="white-card p-6 md:p-10 space-y-6 border group shadow-lg">
-                                        <div className="flex justify-between items-center border-b pb-4">
-                                            <DateInput value={log.date} onChange={(newDate) => getCol('dailyLogs').doc(log.id).update({date: newDate})} />
-                                            <button onClick={() => triggerDelete('dailyLogs', log.id)} className="bg-red-50 text-red-500 px-4 py-2 rounded-lg text-[9px] font-black uppercase font-bold tracking-widest font-bold">SİL</button>
-                                        </div>
-                                        <div className="grid grid-cols-2 gap-4">
-                                            <div>
-                                                <p className="text-[10px] font-black text-slate-400 mb-1 uppercase tracking-widest italic font-bold font-bold">Nakit Satış</p>
-                                                <MoneyInput value={log.cash} onChange={(val) => getCol('dailyLogs').doc(log.id).update({cash: val})} className="w-full bg-slate-50 p-6 rounded-2xl font-black text-xl border-none shadow-inner font-bold" />
-                                            </div>
-                                            <div>
-                                                <p className="text-[10px] font-black text-blue-500 mb-1 uppercase tracking-widest italic font-bold font-bold">POS Satış</p>
-                                                <MoneyInput value={log.card} onChange={(val) => getCol('dailyLogs').doc(log.id).update({card: val})} className="w-full bg-blue-50 p-6 rounded-2xl font-black text-xl text-blue-700 border-none shadow-inner font-bold" />
-                                            </div>
-                                        </div>
-                                        <div className="bg-slate-950 p-6 rounded-3xl border border-slate-800 shadow-inner text-center font-bold">
-                                            <p className="text-[10px] font-black text-amber-500 mb-1 uppercase tracking-widest italic font-bold font-bold">Kredi Girişi</p>
-                                            <MoneyInput value={log.dailyLoan || 0} onChange={(val) => getCol('dailyLogs').doc(log.id).update({dailyLoan: val})} className="w-full bg-transparent p-0 border-none font-black text-3xl text-white italic text-center focus:ring-0 font-bold" placeholder="0" />
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-
-                        {/* POS ANALİZİ */}
-                        {activeTab === 'pos' && (
-                            <div className="max-w-4xl mx-auto space-y-6 md:space-y-10 animate-up font-bold">
-                                <header className="flex flex-col md:flex-row justify-between items-start md:items-center mb-10 gap-6 font-bold">
-                                    <h2 className="text-2xl md:text-4xl font-black text-slate-900 uppercase italic tracking-tighter laos-gradient-text font-bold">POS Alacak Analizi</h2>
-                                    <div className="laos-hero-card text-white px-8 py-6 shadow-xl border-b-8 border-amber-500 font-bold">
-                                        <p className="text-[10px] font-bold text-slate-400 uppercase mb-1 tracking-widest italic font-bold">Net Bekleyen POS</p>
-                                        <p className="text-2xl md:text-4xl font-black gold-text break-all font-bold">{formatCurrency(globalStats.posPending)}</p>
-                                    </div>
-                                </header>
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 font-bold">
-                                    <div className="white-card p-8 border-l-8 border-amber-500 shadow-sm font-bold">
-                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 italic font-bold tracking-widest font-bold">Komisyon Oranı (%)</p>
-                                        <input type="number" step="0.1" value={settings.defaultCommission} onChange={(e) => saveSetting('defaultCommission', e.target.value)} className="text-2xl md:text-4xl font-black bg-transparent w-full focus:ring-0 text-slate-800 font-bold" />
-                                    </div>
-                                    <div className="white-card p-8 border-l-8 border-slate-900 shadow-sm font-bold">
-                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 italic font-bold tracking-widest font-bold">Ortalama Vade (Gün)</p>
-                                        <input type="number" value={settings.defaultValor} onChange={(e) => saveSetting('defaultValor', e.target.value)} className="text-2xl md:text-4xl font-black bg-transparent w-full focus:ring-0 text-slate-800 font-bold" />
-                                    </div>
-                                </div>
-                                <div className="grid gap-4 mt-8 font-bold">
-                                    {posSettlements.map(p => (
-                                        <div key={p.id} className={`white-card p-6 flex flex-col md:flex-row justify-between items-center transition-all ${p.isSettled ? 'opacity-30' : 'border-amber-100 shadow-lg'} font-bold`}>
-                                            <div className="flex items-center gap-6 w-full md:w-auto font-bold">
-                                                <div className={`p-4 rounded-2xl ${p.isSettled ? 'bg-slate-200' : 'bg-slate-950 text-amber-500 shadow-xl'} font-bold`}><Icon name="calendar-clock" size={24} /></div>
-                                                <div className="font-bold">
-                                                    <p className="text-[10px] font-black text-slate-400 uppercase italic mb-1 font-bold">İşlem: {dbToDisplay(p.date)}</p>
-                                                    <p className="text-sm font-bold text-slate-800 italic uppercase font-bold">Tahmini Vade: {p.displaySettlement}</p>
-                                                </div>
-                                            </div>
-                                            <div className="text-right w-full md:w-auto mt-4 md:mt-0 font-bold">
-                                                <p className="text-[10px] font-black text-slate-400 uppercase italic mb-1 font-bold">Net Alacak</p>
-                                                <p className="text-2xl font-black text-slate-950 tracking-tighter font-bold">{formatCurrency(p.net)}</p>
-                                                <p className="text-[9px] font-bold text-slate-300 uppercase mt-1 italic font-bold">Brüt: {formatCurrency(p.gross)}</p>
-                                            </div>
-                                        </div>
-                                    ))}
                                 </div>
                             </div>
                         )}
@@ -607,8 +554,8 @@
                         {/* ANALİZ / RAPORLAR */}
                         {activeTab === 'reports' && (
                             <div className="max-w-5xl mx-auto space-y-8 animate-up pb-20 font-bold">
-                                <header className="flex flex-col md:flex-row justify-between items-center gap-6 font-bold">
-                                    <div className="flex items-center gap-4 font-bold"><div className="w-2 h-12 gold-bg rounded-full shadow-[0_0_15px_#f59e0b] font-bold"></div><h2 className="text-3xl md:text-5xl font-black text-slate-900 tracking-tighter uppercase italic font-bold">İşletme Analizi</h2></div>
+                                <header className="flex flex-col md:flex-row justify-between items-center gap-6 font-bold font-bold">
+                                    <div className="flex items-center gap-4 font-bold font-bold font-bold font-bold font-bold font-bold font-bold"><div className="w-2 h-12 gold-bg rounded-full shadow-[0_0_15px_#f59e0b]"></div><h2 className="text-3xl md:text-5xl font-black text-slate-900 tracking-tighter uppercase italic font-bold">İşletme Analizi</h2></div>
                                     <div className="flex bg-slate-900 p-1.5 md:p-2 rounded-2xl md:rounded-[3rem] border border-slate-800 shadow-2xl overflow-x-auto no-scrollbar max-w-full font-bold">
                                         {['daily', 'monthly', 'custom'].map(r => (
                                             <button key={r} onClick={() => setReportRange(r)} className={`px-6 py-3 md:px-10 md:py-4 rounded-xl md:rounded-full text-[9px] md:text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap font-bold ${reportRange === r ? 'gold-bg text-slate-950 shadow-xl' : 'text-slate-500 hover:text-slate-300'}`}>
@@ -617,120 +564,185 @@
                                         ))}
                                     </div>
                                 </header>
-                                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6 font-bold">
-                                    <div className="bg-white p-6 rounded-[2.5rem] border-l-[10px] border-emerald-500 shadow-xl font-bold">
-                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 italic font-bold">HASILAT</p>
-                                        <p className="text-xl md:text-3xl font-black text-slate-900 tracking-tighter font-bold">{formatCurrency(reportAnalysis.totalIn)}</p>
+                                
+                                {reportRange === 'custom' && (
+                                    <div className="flex gap-4 p-6 white-card justify-center items-center font-bold">
+                                        <DateInput value={customStartDate} onChange={setCustomStartDate} className="bg-slate-50 px-4 py-2 rounded-xl" />
+                                        <Icon name="arrow-right" size={16} className="text-slate-400" />
+                                        <DateInput value={customEndDate} onChange={setCustomEndDate} className="bg-slate-50 px-4 py-2 rounded-xl" />
                                     </div>
-                                    <div className="bg-white p-6 rounded-[2.5rem] border-l-[10px] border-red-500 shadow-xl font-bold">
-                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 italic font-bold">GİDER</p>
-                                        <p className="text-xl md:text-3xl font-black text-red-600 tracking-tighter font-bold">{formatCurrency(reportAnalysis.totalEx)}</p>
+                                )}
+
+                                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6 font-bold font-bold">
+                                    <div className="bg-white p-6 rounded-[2.5rem] border-l-[10px] border-emerald-500 shadow-xl font-bold font-bold">
+                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 italic font-bold">BRÜT HASILAT</p>
+                                        <p className="text-xl md:text-3xl font-black text-slate-900 tracking-tighter font-bold">{formatCurrency(reportAnalysis.totalRevenue)}</p>
+                                    </div>
+                                    <div className="bg-white p-6 rounded-[2.5rem] border-l-[10px] border-red-500 shadow-xl font-bold font-bold">
+                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 italic font-bold">TOPLAM GİDER</p>
+                                        <p className="text-xl md:text-3xl font-black text-red-600 tracking-tighter font-bold">{formatCurrency(reportAnalysis.totalExpense)}</p>
                                     </div>
                                     <div className="laos-hero-card p-6 rounded-[2.5rem] text-white shadow-2xl flex flex-col justify-center font-bold">
                                         <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 italic font-bold">NET KÂR</p>
                                         <p className={`text-xl md:text-3xl font-black tracking-tighter font-bold ${reportAnalysis.profit >= 0 ? 'gold-text' : 'text-red-400'}`}>{formatCurrency(reportAnalysis.profit)}</p>
                                     </div>
-                                    <div className="bg-white p-6 rounded-[2.5rem] border-l-[10px] border-blue-500 shadow-xl font-bold">
-                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 italic font-bold font-bold font-bold">MARJ</p>
+                                    <div className="bg-white p-6 rounded-[2.5rem] border-l-[10px] border-blue-500 shadow-xl font-bold font-bold">
+                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 italic font-bold font-bold">KÂR MARJI</p>
                                         <p className="text-xl md:text-3xl font-black text-blue-600 tracking-tighter font-bold">%{reportAnalysis.margin.toFixed(1)}</p>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-8 font-bold font-bold">
+                                    <div className="white-card p-8 shadow-xl font-bold font-bold">
+                                        <h3 className="text-lg font-black uppercase italic text-slate-800 mb-6 flex items-center gap-3 border-b pb-4 font-bold font-bold">
+                                            <Icon name="trending-up" className="text-emerald-500" /> Gelir Kalemleri
+                                        </h3>
+                                        <div className="space-y-4 font-bold font-bold">
+                                            <div className="flex justify-between items-center bg-slate-50 p-4 rounded-2xl font-bold"><span className="text-sm font-bold uppercase italic font-bold">Nakit Satış</span><span className="font-black text-emerald-600">{formatCurrency(reportAnalysis.incomeCash)}</span></div>
+                                            <div className="flex justify-between items-center bg-slate-50 p-4 rounded-2xl font-bold font-bold"><span className="text-sm font-bold uppercase italic font-bold">Kredi Kartı</span><span className="font-black text-emerald-600">{formatCurrency(reportAnalysis.incomeCard)}</span></div>
+                                            <div className="flex justify-between items-center bg-blue-50/50 p-4 rounded-2xl border border-blue-100 font-bold"><span className="text-sm font-bold uppercase italic text-blue-500">Borç/Kredi Girişi*</span><span className="font-black text-blue-500">{formatCurrency(reportAnalysis.incomeLoan)}</span></div>
+                                            <p className="text-[8px] text-slate-400 italic text-right font-bold">*Borç girişleri net kâr hesabına dahil edilmez.</p>
+                                        </div>
+                                    </div>
+
+                                    <div className="white-card p-8 shadow-xl font-bold">
+                                        <h3 className="text-lg font-black uppercase italic text-slate-800 mb-6 flex items-center gap-3 border-b pb-4 font-bold">
+                                            <Icon name="trending-down" className="text-red-500" /> Gider Kalemleri
+                                        </h3>
+                                        <div className="space-y-4 font-bold">
+                                            <div className="flex justify-between items-center bg-slate-50 p-4 rounded-2xl font-bold"><span className="text-sm font-bold uppercase italic font-bold">Personel Maaşları</span><span className="font-black text-red-600">{formatCurrency(reportAnalysis.staffExpense)}</span></div>
+                                            <div className="flex justify-between items-center bg-slate-50 p-4 rounded-2xl font-bold"><span className="text-sm font-bold uppercase italic font-bold">Ödenen Faturalar</span><span className="font-black text-red-600">{formatCurrency(reportAnalysis.billsExpense)}</span></div>
+                                            <div className="flex justify-between items-center bg-slate-50 p-4 rounded-2xl font-bold font-bold"><span className="text-sm font-bold uppercase italic font-bold">POS Komisyonları</span><span className="font-black text-red-600">{formatCurrency(reportAnalysis.commExpense)}</span></div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
                         )}
 
-                        {/* PERSONEL YÖNETİMİ */}
-                        {activeTab === 'personnel' && (
-                            <div className="max-w-6xl mx-auto space-y-6 animate-up">
-                                {!selectedPersonnelId ? (
-                                    <>
-                                        <div className="flex justify-between items-center mb-10 bg-slate-950 p-6 md:p-8 rounded-3xl border-b-8 border-amber-500 shadow-2xl">
-                                            <h2 className="text-white font-black text-xl md:text-2xl uppercase tracking-widest laos-gradient-text italic font-bold">Ekip Yönetimi</h2>
-                                            <button onClick={() => getCol('personnel').add({name: 'Yeni Personel', fixedSalary: 50000})} className="gold-bg text-slate-950 px-10 py-5 rounded-2xl font-black text-xs uppercase shadow-xl font-bold italic uppercase font-bold">PERSONEL EKLE</button>
+                        {/* GÜNLÜK VERİLER */}
+                        {activeTab === 'daily' && (
+                            <div className="max-w-2xl mx-auto space-y-4 md:space-y-6 animate-up font-bold">
+                                <div className="flex justify-between items-center bg-slate-950 p-6 md:p-8 rounded-3xl border-b-8 border-amber-500 shadow-2xl font-bold">
+                                    <h2 className="text-white font-black text-lg md:text-2xl uppercase tracking-widest laos-gradient-text italic font-bold">Günlük Girişler</h2>
+                                    <button onClick={() => getCol('dailyLogs').add({date: new Date().toISOString().split('T')[0], cash:0, card:0, dailyLoan:0})} className="gold-bg text-slate-950 px-8 py-4 rounded-2xl font-black text-xs uppercase shadow-xl italic font-bold">YENİ GÜN</button>
+                                </div>
+                                {dailyLogs.sort((a,b) => new Date(b.date) - new Date(a.date)).map(log => (
+                                    <div key={log.id} className="white-card p-6 md:p-10 space-y-6 border group shadow-lg font-bold">
+                                        <div className="flex justify-between items-center border-b pb-4 font-bold">
+                                            <DateInput value={log.date} onChange={(newDate) => getCol('dailyLogs').doc(log.id).update({date: newDate})} />
+                                            <button onClick={() => triggerDelete('dailyLogs', log.id)} className="bg-red-50 text-red-500 px-4 py-2 rounded-lg text-[9px] font-black uppercase font-bold tracking-widest font-bold">SİL</button>
                                         </div>
-                                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                                            {personnel.map(p => {
-                                                const paid = personnelPayments.filter(pay => pay.personnelId === p.id).reduce((s, pay) => s + Number(pay.amount || 0), 0);
-                                                const bal = Number(p.fixedSalary || 0) - paid;
-                                                return (
-                                                    <div key={p.id} onClick={() => setSelectedPersonnelId(p.id)} className="white-card p-8 flex flex-col justify-between group cursor-pointer hover:border-amber-400 border border-transparent transition-all shadow-xl min-h-[180px]">
-                                                        <div className="flex justify-between items-start mb-6 font-bold">
-                                                            <div className="bg-slate-950 p-4 rounded-2xl text-amber-500 shadow-xl font-bold"><Icon name="user" size={24} /></div>
-                                                            <button onClick={(e) => { e.stopPropagation(); triggerDelete('personnel', p.id); }} className="bg-red-50 text-red-500 px-3 py-1.5 rounded-lg text-[8px] font-black uppercase font-bold tracking-widest font-bold">SİL</button>
-                                                        </div>
-                                                        <div><p className="font-black text-2xl uppercase tracking-tighter text-slate-800 mb-1 italic font-bold font-bold">{p.name}</p><p className={`text-[10px] font-black uppercase tracking-widest ${bal > 0 ? 'text-red-500' : 'text-green-500'} italic font-bold font-bold`}>BORÇ: {formatCurrency(bal)}</p></div>
-                                                    </div>
-                                                );
-                                            })}
+                                        <div className="grid grid-cols-2 gap-4 font-bold">
+                                            <div>
+                                                <p className="text-[10px] font-black text-slate-400 mb-1 uppercase tracking-widest italic font-bold font-bold">Nakit Satış</p>
+                                                <MoneyInput value={log.cash} onChange={(val) => getCol('dailyLogs').doc(log.id).update({cash: val})} className="w-full bg-slate-50 p-6 rounded-2xl font-black text-xl border-none shadow-inner font-bold italic font-bold" />
+                                            </div>
+                                            <div>
+                                                <p className="text-[10px] font-black text-blue-500 mb-1 uppercase tracking-widest italic font-bold font-bold">POS Satış</p>
+                                                <MoneyInput value={log.card} onChange={(val) => getCol('dailyLogs').doc(log.id).update({card: val})} className="w-full bg-blue-50 p-6 rounded-2xl font-black text-xl text-blue-700 border-none shadow-inner font-bold italic font-bold" />
+                                            </div>
                                         </div>
-                                    </>
-                                ) : (
-                                    <div className="space-y-6 md:space-y-10 animate-up">
-                                        <button onClick={() => setSelectedPersonnelId(null)} className="font-black text-[10px] uppercase text-slate-500 bg-white px-8 py-4 rounded-full shadow-sm border flex items-center gap-2 hover:text-slate-900 italic tracking-widest font-bold"><Icon name="chevron-left" size={14} /> GERİ DÖN</button>
-                                        {personnel.filter(p => p.id === selectedPersonnelId).map(p => {
-                                            const myExtre = personnelPayments.filter(pay => pay.personnelId === p.id).sort((a,b) => new Date(b.date) - new Date(a.date));
-                                            const totalPaid = myExtre.reduce((s, pay) => s + Number(pay.amount || 0), 0);
-                                            const balance = Number(p.fixedSalary || 0) - totalPaid;
-                                            return (
-                                                <div key={p.id} className="space-y-10">
-                                                    <div className="laos-hero-card p-10 md:p-14 text-white shadow-2xl">
-                                                        <input value={p.name} onChange={(e) => getCol('personnel').doc(p.id).update({name: e.target.value})} className="text-3xl md:text-6xl font-black bg-transparent w-full uppercase gold-text italic tracking-tighter mb-10 font-bold shadow-none border-none focus:ring-0" />
-                                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                                                            <div className="bg-slate-900/50 p-8 rounded-[2rem] border border-slate-800 font-bold"><p className="text-[10px] font-bold text-slate-500 uppercase mb-2 italic tracking-widest font-bold">Maaş</p><div className="flex items-center gap-2 font-black text-3xl md:text-5xl gold-text italic font-bold"><span className="text-xl font-bold">₺</span><MoneyInput value={p.fixedSalary} onChange={(val) => getCol('personnel').doc(p.id).update({fixedSalary: val})} className="bg-transparent w-full border-none focus:ring-0 font-bold" /></div></div>
-                                                            <div className="bg-slate-900/50 p-8 rounded-[2rem] border border-slate-800 font-bold"><p className="text-[10px] font-bold text-slate-500 uppercase mb-2 italic tracking-widest font-bold">Borç</p><p className={`text-3xl md:text-6xl font-black italic break-all font-bold ${balance > 0 ? 'text-red-400' : 'text-green-400'}`}>{formatCurrency(balance)}</p></div>
-                                                        </div>
+                                        <div className="bg-slate-950 p-6 rounded-3xl border border-slate-800 shadow-inner text-center font-bold">
+                                            <p className="text-[10px] font-black text-amber-500 mb-1 uppercase tracking-widest italic font-bold">Kredi Girişi</p>
+                                            <MoneyInput value={log.dailyLoan || 0} onChange={(val) => getCol('dailyLogs').doc(log.id).update({dailyLoan: val})} className="w-full bg-transparent p-0 border-none font-black text-3xl text-white italic text-center focus:ring-0 font-bold" placeholder="0" />
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {/* REÇETE YÖNETİMİ */}
+                        {activeTab === 'recipe' && (
+                            <div className="max-w-6xl mx-auto space-y-8 animate-up pb-20 font-bold">
+                                <header className="flex flex-col md:flex-row justify-between items-center gap-6 font-bold font-bold">
+                                    <div className="flex items-center gap-4 font-bold font-bold font-bold"><div className="w-2 h-12 gold-bg rounded-full shadow-[0_0_15px_#f59e0b]"></div><h2 className="text-3xl md:text-5xl font-black text-slate-900 tracking-tighter uppercase italic font-bold font-bold font-bold">Maliyet Analizi</h2></div>
+                                    <div className="flex bg-slate-900 p-1.5 md:p-2 rounded-2xl md:rounded-[3rem] border border-slate-800 shadow-2xl font-bold font-bold">
+                                        {['products', 'materials'].map(r => (
+                                            <button key={r} onClick={() => {setRecipeSubTab(r); setSelectedProductId(null);}} 
+                                                className={`px-6 py-3 md:px-10 md:py-4 rounded-xl md:rounded-full text-[9px] md:text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap font-bold ${recipeSubTab === r ? 'gold-bg text-slate-950 shadow-xl' : 'text-slate-500 hover:text-slate-300'}`}>
+                                                {r === 'products' ? 'ÜRÜN REÇETELERİ' : 'HAMMADDE FİYATLARI'}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </header>
+                                {recipeSubTab === 'materials' && (
+                                    <div className="white-card p-6 md:p-10 shadow-xl space-y-8 font-bold">
+                                        <div className="flex justify-between items-center border-b pb-8 font-bold font-bold">
+                                            <h3 className="text-xl font-black uppercase italic text-slate-800 tracking-tighter flex items-center gap-3 font-bold"><Icon name="boxes" className="text-amber-500" /> Hammadde Listesi</h3>
+                                            <button onClick={() => getCol('materials').add({name: 'Yeni Malzeme', price: 0, unit: 'kg'})} className="bg-slate-950 text-white px-8 py-4 rounded-2xl text-[10px] font-black uppercase shadow-xl italic font-bold">MALZEME EKLE</button>
+                                        </div>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 font-bold font-bold font-bold font-bold">
+                                            {materials.map(m => (
+                                                <div key={m.id} className="bg-slate-50 p-6 rounded-3xl border border-slate-100 hover:shadow-md transition-all space-y-4 font-bold">
+                                                    <div className="flex justify-between items-start font-bold">
+                                                        <input value={m.name} onChange={(e) => getCol('materials').doc(m.id).update({name: e.target.value})} className="font-black uppercase text-sm bg-transparent border-none focus:ring-0 w-full italic font-bold" />
+                                                        <button 
+                                                            onClick={() => triggerDelete('materials', m.id)} 
+                                                            className="p-2 bg-red-100 text-red-600 hover:bg-red-600 hover:text-white rounded-xl transition-all shadow-sm"
+                                                            title="Malzemeyi Sil"
+                                                        >
+                                                            <Icon name="trash-2" size={18} />
+                                                        </button>
                                                     </div>
-                                                    <div className="white-card p-10 shadow-2xl space-y-6">
-                                                        <div className="flex justify-between items-center border-b pb-4 font-bold">
-                                                            <h3 className="text-xl font-black text-slate-800 uppercase italic font-bold">Personel Ekstresi</h3>
-                                                            <button onClick={() => getCol('personnelPayments').add({personnelId: p.id, amount: 0, date: new Date().toISOString().split('T')[0]})} className="bg-slate-950 text-white px-6 py-2 rounded-xl text-[10px] font-black uppercase font-bold italic tracking-widest">ÖDEME EKLE</button>
+                                                    <div className="grid grid-cols-2 gap-4 font-bold font-bold font-bold">
+                                                        <div className="font-bold font-bold">
+                                                            <p className="text-[9px] font-black text-slate-400 uppercase italic font-bold font-bold">Birim</p>
+                                                            <select 
+                                                                value={m.unit} 
+                                                                onChange={(e) => getCol('materials').doc(m.id).update({unit: e.target.value})} 
+                                                                className="w-full bg-white px-3 py-2 rounded-xl text-xs border font-black uppercase focus:ring-2 focus:ring-amber-500 italic font-bold font-bold font-bold font-bold"
+                                                            >
+                                                                {MATERIAL_UNITS.map(u => <option key={u.id} value={u.id}>{u.label}</option>)}
+                                                            </select>
                                                         </div>
-                                                        {myExtre.map(pay => (
-                                                            <div key={pay.id} className="flex justify-between items-center bg-slate-50 p-4 rounded-2xl border font-bold">
-                                                                <input type="date" value={pay.date} onChange={(e) => getCol('personnelPayments').doc(pay.id).update({date: e.target.value})} className="bg-transparent border-none p-0 font-black italic text-slate-500" />
-                                                                <div className="flex items-center gap-4 font-bold">
-                                                                    <MoneyInput value={pay.amount} onChange={(v) => getCol('personnelPayments').doc(pay.id).update({amount: v})} className="text-right font-black text-slate-900 bg-transparent border-none w-24 focus:ring-0" />
-                                                                    <button onClick={() => getCol('personnelPayments').doc(pay.id).delete()} className="text-red-200 hover:text-red-500"><Icon name="trash-2" size={18}/></button>
-                                                                </div>
-                                                            </div>
-                                                        ))}
+                                                        <div className="font-bold font-bold font-bold font-bold font-bold"><p className="text-[9px] font-black text-slate-400 uppercase italic font-bold">Birim Fiyat (₺)</p><MoneyInput value={m.price} onChange={(val) => getCol('materials').doc(m.id).update({price: val})} className="w-full bg-white px-3 py-2 rounded-xl text-sm border font-black italic font-bold" /></div>
                                                     </div>
                                                 </div>
-                                            );
-                                        })}
+                                            ))}
+                                        </div>
                                     </div>
                                 )}
                             </div>
                         )}
 
+                        {/* PERSONEL YÖNETİMİ */}
+                        {activeTab === 'personnel' && (
+                            <div className="max-w-6xl mx-auto space-y-6 animate-up font-bold">
+                                <div className="flex justify-between items-center mb-10 bg-slate-950 p-6 md:p-8 rounded-3xl border-b-8 border-amber-500 shadow-2xl font-bold">
+                                    <h2 className="text-white font-black text-xl md:text-2xl uppercase tracking-widest laos-gradient-text italic font-bold">Ekip Yönetimi</h2>
+                                    <button onClick={() => getCol('personnel').add({name: 'Yeni Personel', fixedSalary: 50000})} className="gold-bg text-slate-950 px-10 py-5 rounded-2xl font-black text-xs uppercase shadow-xl italic font-bold">PERSONEL EKLE</button>
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 font-bold font-bold font-bold font-bold">
+                                    {personnel.map(p => {
+                                        const paid = personnelPayments.filter(pay => pay.personnelId === p.id).reduce((s, pay) => s + Number(pay.amount || 0), 0);
+                                        const bal = Number(p.fixedSalary || 0) - paid;
+                                        return (
+                                            <div key={p.id} onClick={() => setSelectedPersonnelId(p.id)} className="white-card p-8 group cursor-pointer hover:border-amber-400 transition-all shadow-xl font-bold font-bold">
+                                                <div className="flex justify-between items-start mb-6 font-bold font-bold font-bold font-bold"><div className="bg-slate-950 p-4 rounded-2xl text-amber-500 font-bold font-bold font-bold font-bold"><Icon name="user" size={24} /></div><button onClick={(e) => { e.stopPropagation(); triggerDelete('personnel', p.id); }} className="bg-red-50 text-red-500 px-3 py-1.5 rounded-lg text-[8px] font-black uppercase font-bold">SİL</button></div>
+                                                <div><p className="font-black text-2xl uppercase tracking-tighter text-slate-800 mb-1 italic font-bold font-bold">{p.name}</p><p className={`text-[10px] font-black uppercase tracking-widest ${bal > 0 ? 'text-red-500' : 'text-green-500'} italic font-bold font-bold`}>BORÇ: {formatCurrency(bal)}</p></div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
+
                         {/* ÖDEMELER / GİDERLER */}
                         {activeTab === 'payments' && (
-                            <div className="max-w-4xl mx-auto space-y-6 md:space-y-8 animate-up">
-                                <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 md:mb-10 bg-slate-950 p-6 md:p-8 rounded-3xl border-b-8 border-amber-500 shadow-2xl gap-6 font-bold">
+                            <div className="max-w-4xl mx-auto space-y-6 md:space-y-8 animate-up font-bold">
+                                <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 md:mb-10 bg-slate-950 p-6 md:p-8 rounded-3xl border-b-8 border-amber-500 shadow-2xl gap-6 font-bold font-bold font-bold">
                                     <h2 className="text-white font-black text-xl md:text-2xl uppercase tracking-widest laos-gradient-text italic font-bold">Gider Planı</h2>
-                                    <button onClick={() => getCol('scheduledPayments').add({label: 'Yeni Gider', amount: 0, status: 'pending', date: new Date().toISOString().split('T')[0]})} className="gold-bg text-slate-950 px-10 py-5 rounded-2xl font-black text-xs uppercase shadow-xl italic tracking-widest font-bold font-bold">GİDER EKLE</button>
+                                    <button onClick={() => getCol('scheduledPayments').add({label: 'Yeni Gider', amount: 0, status: 'pending', date: new Date().toISOString().split('T')[0]})} className="gold-bg text-slate-950 px-10 py-5 rounded-2xl font-black text-xs uppercase shadow-xl italic font-bold">GİDER EKLE</button>
                                 </div>
                                 {scheduledPayments.sort((a,b) => new Date(b.date) - new Date(a.date)).map(p => (
-                                    <div key={p.id} className={`white-card p-6 md:p-10 flex flex-col md:flex-row justify-between items-center gap-6 transition-all ${p.status === 'paid' ? 'opacity-40 grayscale' : 'shadow-2xl border-l-8 border-red-500'}`}>
-                                        <div className="flex-1 w-full space-y-4 font-bold">
-                                            <DateInput value={p.date} onChange={(newDate) => getCol('scheduledPayments').doc(p.id).update({date: newDate})} />
-                                            <input value={p.label} onChange={(e) => getCol('scheduledPayments').doc(p.id).update({label: e.target.value})} className="font-black text-2xl w-full uppercase border-none p-0 focus:ring-0 italic text-slate-800 font-bold font-bold" />
-                                            <div className="flex items-center gap-2 font-black text-3xl md:text-5xl text-slate-950 tracking-tighter italic font-bold">
-                                                <MoneyInput value={p.amount} onChange={(val) => getCol('scheduledPayments').doc(p.id).update({amount: val})} className="bg-transparent w-full border-none p-0 focus:ring-0 font-black font-bold font-bold" />
-                                            </div>
-                                        </div>
-                                        <button onClick={() => getCol('scheduledPayments').doc(p.id).update({status: p.status === 'paid' ? 'pending' : 'paid'})} className={`px-8 py-4 rounded-2xl font-black text-xs uppercase shadow-xl font-bold font-bold ${p.status === 'paid' ? 'bg-green-500 text-white' : 'bg-slate-950 text-white font-bold'}`}>{p.status === 'paid' ? 'ÖDENDİ' : 'ÖDEMEYİ YAP'}</button>
+                                    <div key={p.id} className={`white-card p-6 md:p-10 flex flex-col md:flex-row justify-between items-center gap-6 transition-all ${p.status === 'paid' ? 'opacity-40 grayscale' : 'shadow-2xl border-l-8 border-red-500'} font-bold`}>
+                                        <div className="flex-1 w-full space-y-4 font-bold"><DateInput value={p.date} onChange={(newDate) => getCol('scheduledPayments').doc(p.id).update({date: newDate})} /><input value={p.label} onChange={(e) => getCol('scheduledPayments').doc(p.id).update({label: e.target.value})} className="font-black text-2xl w-full uppercase border-none p-0 focus:ring-0 italic text-slate-800 font-bold" /><MoneyInput value={p.amount} onChange={(val) => getCol('scheduledPayments').doc(p.id).update({amount: val})} className="bg-transparent border-none p-0 font-black text-3xl font-bold font-bold" /></div>
+                                        <div className="flex flex-col gap-2 font-bold font-bold"><button onClick={() => getCol('scheduledPayments').doc(p.id).update({status: p.status === 'paid' ? 'pending' : 'paid'})} className={`px-8 py-4 rounded-2xl font-black text-xs uppercase shadow-xl font-bold font-bold ${p.status === 'paid' ? 'bg-green-500 text-white' : 'bg-slate-950 text-white'}`}>{p.status === 'paid' ? 'ÖDENDİ' : 'ÖDEMEYİ YAP'}</button><button onClick={() => triggerDelete('scheduledPayments', p.id)} className="text-[9px] font-black uppercase text-red-400 hover:text-red-600 transition-all font-bold">SİL</button></div>
                                     </div>
                                 ))}
                             </div>
                         )}
                     </main>
-
-                    <div className="fixed top-4 right-4 z-[1001] md:top-8 md:right-8">
-                        <div className="px-5 py-3 rounded-full bg-[#0f172a] shadow-2xl border border-slate-800 flex items-center gap-3">
-                            <div className="w-2.5 h-2.5 rounded-full gold-bg shadow-[0_0_15px_#f59e0b] animate-pulse"></div>
-                            <span className="text-[9px] font-black gold-text uppercase tracking-widest italic font-bold">LAOS CONNECTED</span>
-                        </div>
-                    </div>
                 </div>
             );
         };
